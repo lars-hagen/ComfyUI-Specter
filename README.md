@@ -91,6 +91,15 @@ flowchart LR
 
 Use `force_login` to re-authenticate if session expires.
 
+## Example Workflows
+
+| Workflow | Description |
+|----------|-------------|
+| [txt2img_basic](workflows/txt2img_basic.json) | Text-to-image generation |
+| [img2img_edit](workflows/img2img_edit.json) | Edit/transform existing images |
+| [prompt_enhancer](workflows/prompt_enhancer.json) | Enhance basic prompts with GPT |
+| [image_describer](workflows/image_describer.json) | Generate descriptions from images |
+
 ## Troubleshooting
 
 - **Session expired?** Enable `force_login` input
