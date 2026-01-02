@@ -1,78 +1,51 @@
 {
-  "last_node_id": 4,
-  "last_link_id": 3,
+  "last_node_id": 2,
+  "last_link_id": 1,
   "nodes": [
     {
       "id": 1,
-      "type": "String Literal",
-      "pos": [100, 200],
-      "size": [400, 150],
+      "type": "Specter_ChatGPT",
+      "pos": [200, 200],
+      "size": [300, 400],
       "flags": {},
       "order": 0,
       "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {"name": "STRING", "type": "STRING", "links": [1], "slot_index": 0}
-      ],
-      "properties": {"Node name for S&R": "String Literal"},
-      "widgets_values": ["a cat sitting on a couch"]
-    },
-    {
-      "id": 2,
-      "type": "Specter_ChatGPT",
-      "pos": [600, 200],
-      "size": [400, 300],
-      "flags": {},
-      "order": 1,
-      "mode": 0,
       "inputs": [
-        {"name": "prompt", "type": "STRING", "link": 1, "widget": {"name": "prompt"}}
+        {"name": "image", "type": "IMAGE", "link": null, "shape": 7},
+        {"name": "prompt", "type": "STRING", "link": null, "widget": {"name": "prompt"}},
+        {"name": "model", "type": "COMBO", "link": null, "widget": {"name": "model"}},
+        {"name": "size", "type": "COMBO", "link": null, "widget": {"name": "size"}, "shape": 7},
+        {"name": "preview", "type": "BOOLEAN", "link": null, "widget": {"name": "preview"}, "shape": 7},
+        {"name": "force_login", "type": "BOOLEAN", "link": null, "widget": {"name": "force_login"}, "shape": 7}
       ],
       "outputs": [
-        {"name": "response", "type": "STRING", "links": [2], "slot_index": 0},
-        {"name": "image", "type": "IMAGE", "links": null}
+        {"name": "response", "type": "STRING", "links": [1], "slot_index": 0},
+        {"name": "image", "type": "IMAGE", "links": [], "slot_index": 1}
       ],
       "properties": {"Node name for S&R": "Specter_ChatGPT"},
       "widgets_values": [
-        "Enhance this image generation prompt to be more detailed and cinematic. Add lighting, mood, camera angle, and artistic style details. Only output the enhanced prompt, nothing else:\n\n",
+        "Enhance this basic prompt for image generation, add artistic details, lighting, composition, and style: 'a cat sitting on a windowsill'",
         "gpt-5.2-instant",
         "auto",
-        false,
+        true,
         false
       ]
     },
     {
-      "id": 3,
-      "type": "ShowText|pysssss",
-      "pos": [1100, 200],
-      "size": [400, 200],
-      "flags": {},
-      "order": 2,
-      "mode": 0,
-      "inputs": [
-        {"name": "text", "type": "STRING", "link": 2}
-      ],
-      "outputs": [
-        {"name": "STRING", "type": "STRING", "links": [3], "slot_index": 0}
-      ],
-      "properties": {"Node name for S&R": "ShowText|pysssss"}
-    },
-    {
-      "id": 4,
+      "id": 2,
       "type": "Note",
-      "pos": [100, 400],
-      "size": [400, 100],
+      "pos": [550, 200],
+      "size": [300, 200],
       "flags": {},
-      "order": 3,
+      "order": 1,
       "mode": 0,
-      "properties": {"text": "Enter your basic prompt here. GPT will enhance it with cinematic details, lighting, mood, etc."},
-      "widgets_values": ["Enter your basic prompt here. GPT will enhance it with cinematic details, lighting, mood, etc."]
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": ["Connect response output to your prompt input for enhanced prompts"]
     }
   ],
-  "links": [
-    [1, 1, 0, 2, 0, "STRING"],
-    [2, 2, 0, 3, 0, "STRING"]
-  ],
+  "links": [],
   "groups": [],
   "config": {},
   "extra": {
