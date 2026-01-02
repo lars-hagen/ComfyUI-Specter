@@ -95,10 +95,10 @@ Use `force_login` to re-authenticate if session expires.
 
 | Workflow | Description |
 |----------|-------------|
-| [txt2img_basic](workflows/txt2img_basic.json) | Text-to-image generation |
-| [img2img_edit](workflows/img2img_edit.json) | Edit/transform existing images |
-| [prompt_enhancer](workflows/prompt_enhancer.json) | Enhance basic prompts with GPT |
-| [image_describer](workflows/image_describer.json) | Generate descriptions from images |
+| [txt2img_basic](example_workflows/txt2img_basic.json) | Text-to-image generation |
+| [img2img_edit](example_workflows/img2img_edit.json) | Edit/transform existing images |
+| [prompt_enhancer](example_workflows/prompt_enhancer.json) | Enhance basic prompts with GPT |
+| [image_describer](example_workflows/image_describer.json) | Generate descriptions from images |
 
 ## Troubleshooting
 
