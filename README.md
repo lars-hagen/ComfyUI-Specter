@@ -4,6 +4,20 @@ Browser automation nodes for AI web interfaces. Access ChatGPT models through th
 
 ![demo](image.png)
 
+## How It Works
+
+```mermaid
+flowchart LR
+    A[ComfyUI Workflow] --> B[Specter Node]
+    B --> C[Camoufox Browser]
+    C --> D[ChatGPT Web UI]
+    D --> E[Generated Image]
+    E --> A
+
+    C -.-> F[(Session Storage)]
+    F -.-> C
+```
+
 ## Why Specter?
 
 | | API | Specter (Web UI) |
