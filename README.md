@@ -2,6 +2,8 @@
 
 Browser automation nodes for AI web interfaces. Access ChatGPT models through the web UI instead of expensive API calls.
 
+<video src="demo.mp4" controls width="100%"></video>
+
 ![demo](image.png)
 
 ## How It Works
