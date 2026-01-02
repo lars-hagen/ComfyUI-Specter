@@ -2,7 +2,7 @@
 
 Browser automation nodes for AI web interfaces. Access ChatGPT models through the web UI instead of expensive API calls.
 
-![demo](demo.png)
+![demo](image.png)
 
 ## Why Specter?
 
@@ -12,17 +12,36 @@ Browser automation nodes for AI web interfaces. Access ChatGPT models through th
 | **GPT-5.2** | $2.50/1M tokens | **Included in subscription** |
 | **o3 Reasoning** | $10-20/1M tokens | **Included in Plus/Pro** |
 
+## Image Capabilities (gpt-image-1.5)
+
+**Generation**
+- Text-to-Image                                                       
+- Image editing (img2img)  
+- Text rendering in images (posters, infographics)
+
+**Editing**
+- Inpainting
+- Object add/remove
+- Background replacement
+- Style transfer
+- Clothing/appearance changes
+
+**Preservation**
+- Facial likeness consistency
+- Lighting/composition matching
+- Color tone preservation
+
 ## Model Access by Subscription
 
 | Model | Free | Go ($5) | Plus ($20) | Pro ($200) |
 |-------|------|---------|------------|------------|
-| **gpt-image-1.5** | ✅ 2-3/day | ✅ Extended | ✅ 50/3hr | ✅ Unlimited |
-| **gpt-5.2** | ✅ 10/5hr | ✅ 10-30/day | ✅ 160/3hr | ✅ Unlimited |
-| **gpt-5.2-instant** | ✅ Fallback | ✅ Default | ✅ Full | ✅ Unlimited |
-| **gpt-5.2-thinking** | ✅ 1/day | ✅ Auto | ✅ Full | ✅ Unlimited |
-| **o3** | ❌ | ❌ | ✅ 100/week | ✅ Unlimited |
-| **o4-mini** | ❌ | ❌ | ✅ 300/day | ✅ Unlimited |
-| **gpt-4o** | ✅ Limited | ❌ | ✅ 80/3hr | ✅ Unlimited |
+| **gpt-image-1.5** | 2-3/day | Extended | 50/3hr | Unlimited |
+| **gpt-5.2** | 10/5hr | 10-30/day | 160/3hr | Unlimited |
+| **gpt-5.2-instant** | Fallback | Default | Full | Unlimited |
+| **gpt-5.2-thinking** | 1/day | Auto | Full | Unlimited |
+| **o3** | - | - | 100/week | Unlimited |
+| **o4-mini** | - | - | 300/day | Unlimited |
+| **gpt-4o** | Limited | - | 80/3hr | Unlimited |
 
 ## Installation
 
