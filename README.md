@@ -1,6 +1,10 @@
 # ComfyUI-Specter
 
-Browser automation nodes for AI web interfaces. Access ChatGPT models through the web UI instead of expensive API calls.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![ComfyUI](https://img.shields.io/badge/ComfyUI-Custom_Node-blue)](https://github.com/comfyanonymous/ComfyUI)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+
+**A stealthy browser ghost that haunts ChatGPT's web interface so you don't have to.** Generate images, enhance prompts, and chat with GPT models — all without API costs. Just your existing ChatGPT account (even free tier).
 
 ![demo](demo.jpg)
 
