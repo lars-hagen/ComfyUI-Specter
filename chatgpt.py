@@ -203,6 +203,8 @@ async def chat_with_gpt(
             await asyncio.sleep(0.5)
             progress(25)
 
+        prompt_preview = prompt[:60] + "..." if len(prompt) > 60 else prompt
+        log(f"Typing prompt: \"{prompt_preview}\"", "✎")
         await page.locator(SELECTORS["textarea"]).fill(prompt)
         progress(30)
 
