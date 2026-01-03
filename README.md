@@ -116,10 +116,12 @@ Generate detailed descriptions from images.
 - Lighting/composition matching
 - Color tone preservation
 
-## Model Access by Subscription
+## ChatGPT Rate Limits
 
-| Model | Free | Plus ($20) | Pro ($200) |
-|-------|------|------------|------------|
+Usage depends on your existing ChatGPT subscription tier:
+
+| Model | Free | Plus | Pro |
+|-------|------|------|-----|
 | **gpt-image-1.5** | 2-3/day | 50/3hr | Unlimited |
 | **gpt-5.2** | 10/5hr | 160/3hr | Unlimited |
 | **gpt-5.2-instant** | Fallback | Full | Unlimited |
