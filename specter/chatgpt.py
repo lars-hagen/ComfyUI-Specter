@@ -11,7 +11,7 @@ import numpy as np
 import torch
 from PIL import Image
 
-from .session import load_session, is_logged_in, interactive_login
+from .session import load_session, is_logged_in
 from .config import get_all_model_ids, get_image_sizes, get_size_resolution, get_image_model_config, TOOLTIPS
 
 # Browser selectors
@@ -27,16 +27,6 @@ LOGIN_SELECTORS = [
     'button:has-text("Sign up")',
     'a:has-text("Sign up")',
 ]
-
-CHATGPT_CONFIG = {
-    "service": "chatgpt",
-    "login_url": "https://chatgpt.com/auth/login",
-    "login_selectors": LOGIN_SELECTORS,
-    "success_url_contains": "chatgpt.com",
-    "success_url_excludes": "/auth/",
-    "workspace_selector": '[data-testid="modal-workspace-switcher"]',
-}
-
 
 # =============================================================================
 # UTILITIES
@@ -183,16 +173,8 @@ async def chat_with_gpt(
         await page.goto("https://chatgpt.com/", timeout=60000)
 
         if not await is_logged_in(page, LOGIN_SELECTORS):
-            log("Authentication required - opening login flow...", "!")
-            await page.close()
-            await ctx.close()
-            session = await interactive_login(**CHATGPT_CONFIG)
-            ctx = await browser.new_context(storage_state=session)
-            page = await ctx.new_page()
-            page.on("response", handle_response)
-            await page.route("**/backend-api/**/conversation", intercept)
-            await page.goto("https://chatgpt.com/", timeout=60000)
-            await page.wait_for_selector(SELECTORS["textarea"], state="visible", timeout=30000)
+            log("Not logged in!", "✕")
+            raise Exception("ChatGPT login required. Go to Settings > Specter > Authentication and click Sign In.")
 
         progress(20)
         log("Connected to ChatGPT", "●")
