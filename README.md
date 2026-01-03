@@ -4,7 +4,7 @@ Browser automation nodes for AI web interfaces. Access ChatGPT models through th
 
 ![demo](demo.jpg)
 
-https://github.com/user-attachments/assets/013162f9-e833-4f44-b5ea-ea57a7a6b382
+https://github.com/user-attachments/assets/ffbe5846-24ae-4c7c-a393-4b504e196287
 
 ## How It Works
 
