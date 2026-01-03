@@ -4,6 +4,10 @@
  */
 
 import { app } from "../../scripts/app.js";
+import { api } from "../../scripts/api.js";
+
+// Global login function that can be triggered from backend
+let specterStartLogin = null;
 
 // Color scheme - darker headers for light title text visibility
 const SPECTER_COLORS = {
@@ -269,6 +273,9 @@ app.registerExtension({
                 closeBtn.addEventListener("click", stopBrowser);
                 checkStatus();
 
+                // Export login function for backend trigger
+                specterStartLogin = startBrowser;
+
                 return container;
             },
             defaultValue: "",
@@ -303,6 +310,16 @@ app.registerExtension({
             node.bgcolor = colors.nodeBgColor;
         }
     },
+});
+
+// Listen for login required event from backend
+api.addEventListener("specter-login-required", () => {
+    console.log("[Specter] Login required - opening authentication popup");
+    if (specterStartLogin) {
+        specterStartLogin();
+    } else {
+        alert("ChatGPT login required. Please go to Settings > Specter > Authentication and click Sign In.");
+    }
 });
 
 console.log("[Specter] Appearance extension loaded");
