@@ -61,12 +61,33 @@ flowchart LR
 
 ## Example Workflows
 
-| Workflow | Description |
-|----------|-------------|
-| [txt2img_basic](example_workflows/txt2img_basic.json) | Text-to-image generation with ChatGPT Image |
-| [img2img_edit](example_workflows/img2img_edit.json) | Edit images with ChatGPT Multimodal |
-| [prompt_enhancer](example_workflows/prompt_enhancer.json) | Enhance prompts before image generation |
-| [image_describer](example_workflows/image_describer.json) | Generate descriptions from images |
+### Text to Image
+Generate images from text prompts using ChatGPT Image.
+
+![txt2img](example_workflows/txt2img_basic.jpg)
+
+[Download workflow](example_workflows/txt2img_basic.json)
+
+### Image to Image
+Edit and transform images with ChatGPT Multimodal.
+
+![img2img](example_workflows/img2img_edit.jpg)
+
+[Download workflow](example_workflows/img2img_edit.json)
+
+### Prompt Enhancer
+Enhance basic prompts for better image generation results.
+
+![prompt_enhancer](example_workflows/prompt_enhancer.jpg)
+
+[Download workflow](example_workflows/prompt_enhancer.json)
+
+### Image Describer
+Generate detailed descriptions from images.
+
+![image_describer](example_workflows/image_describer.jpg)
+
+[Download workflow](example_workflows/image_describer.json)
 
 ## Image Capabilities (gpt-image-1.5)
 
