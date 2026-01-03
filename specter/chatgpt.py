@@ -173,11 +173,35 @@ async def chat_with_gpt(
         await page.goto("https://chatgpt.com/", timeout=60000)
 
         if not await is_logged_in(page, LOGIN_SELECTORS):
-            log("Not logged in - requesting authentication...", "✕")
+            log("Not logged in - opening authentication popup...", "⚠")
             # Send event to frontend to open login popup
             from server import PromptServer
             PromptServer.instance.send_sync("specter-login-required", {})
-            raise Exception("ChatGPT login required. Opening authentication popup...")
+
+            # Wait for user to complete login (check for session file)
+            log("Waiting for login to complete...", "◌")
+            login_timeout = 300  # 5 minutes max
+            poll_interval = 2
+            elapsed = 0
+
+            while elapsed < login_timeout:
+                await asyncio.sleep(poll_interval)
+                elapsed += poll_interval
+
+                # Check if session was saved
+                new_session = load_session("chatgpt")
+                if new_session:
+                    log("Login detected! Continuing...", "●")
+                    # Reload page with new session
+                    await ctx.close()
+                    ctx = await browser.new_context(storage_state=new_session)
+                    page = await ctx.new_page()
+                    page.on("response", handle_response)
+                    await page.route("**/backend-api/**/conversation", intercept)
+                    await page.goto("https://chatgpt.com/", timeout=60000)
+                    break
+            else:
+                raise Exception("Login timed out after 5 minutes. Please try again.")
 
         progress(20)
         log("Connected to ChatGPT", "●")

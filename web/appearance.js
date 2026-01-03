@@ -6,8 +6,146 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
-// Global login function that can be triggered from backend
-let specterStartLogin = null;
+// Standalone login popup that can be triggered anytime
+const specterLogin = {
+    popup: null,
+    canvas: null,
+    ctx: null,
+    ws: null,
+    active: false,
+
+    createPopup() {
+        if (this.popup) return;
+
+        this.popup = document.createElement("div");
+        this.popup.style.cssText = `
+            display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            z-index: 10000; background: var(--comfy-menu-bg, #353535); border-radius: 8px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+            padding: 12px; border: 1px solid var(--border-color, #4e4e4e);
+        `;
+
+        const header = document.createElement("div");
+        header.style.cssText = "display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; cursor: move;";
+        header.innerHTML = `<span style="color: var(--fg-color, #fff); font-weight: 500;">ChatGPT Login</span>`;
+
+        const closeBtn = document.createElement("button");
+        closeBtn.className = "p-button p-component p-button-primary";
+        closeBtn.innerHTML = `<span class="p-button-label">Save & Close</span>`;
+        closeBtn.onclick = () => this.stop();
+        header.appendChild(closeBtn);
+
+        this.canvas = document.createElement("canvas");
+        this.canvas.style.cssText = "cursor: pointer; display: block; border-radius: 4px;";
+        this.canvas.tabIndex = 0;
+        this.ctx = this.canvas.getContext("2d");
+
+        this.popup.append(header, this.canvas);
+        document.body.appendChild(this.popup);
+
+        // Draggable
+        let dragging = false, dragX, dragY;
+        header.addEventListener("mousedown", (e) => {
+            if (e.target === closeBtn || closeBtn.contains(e.target)) return;
+            dragging = true;
+            dragX = e.clientX - this.popup.offsetLeft;
+            dragY = e.clientY - this.popup.offsetTop;
+        });
+        document.addEventListener("mousemove", (e) => {
+            if (!dragging) return;
+            this.popup.style.left = e.clientX - dragX + "px";
+            this.popup.style.top = e.clientY - dragY + "px";
+            this.popup.style.transform = "none";
+        });
+        document.addEventListener("mouseup", () => dragging = false);
+
+        // Canvas events
+        const getCoords = (e) => {
+            const rect = this.canvas.getBoundingClientRect();
+            return {
+                x: (e.clientX - rect.left) * (this.canvas.width / rect.width),
+                y: (e.clientY - rect.top) * (this.canvas.height / rect.height)
+            };
+        };
+        const send = (event) => {
+            if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(event));
+        };
+        this.canvas.addEventListener("mousedown", (e) => { this.canvas.focus(); e.preventDefault(); send({ type: "mousedown", ...getCoords(e) }); });
+        this.canvas.addEventListener("mouseup", (e) => { e.preventDefault(); send({ type: "mouseup", ...getCoords(e) }); });
+        this.canvas.addEventListener("mousemove", (e) => { if (e.buttons === 1) send({ type: "mousemove", ...getCoords(e) }); });
+        this.canvas.addEventListener("wheel", (e) => { this.canvas.focus(); e.preventDefault(); send({ type: "scroll", dx: e.deltaX, dy: e.deltaY }); }, { passive: false });
+
+        const stopKey = (e) => { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation(); };
+        this.canvas.addEventListener("keydown", async (e) => {
+            stopKey(e);
+            const hasCtrl = e.ctrlKey || e.metaKey;
+            if (hasCtrl && e.key.toLowerCase() === "v") {
+                try { const text = await navigator.clipboard.readText(); if (text) send({ type: "type", text }); } catch {}
+                return;
+            }
+            const mods = [];
+            if (hasCtrl) mods.push("Control");
+            if (e.altKey) mods.push("Alt");
+            if (e.shiftKey) mods.push("Shift");
+            if (mods.length > 0) send({ type: "keydown", key: [...mods, e.key].join("+") });
+            else if (e.key.length === 1) send({ type: "type", text: e.key });
+            else send({ type: "keydown", key: e.key });
+        }, true);
+        this.canvas.addEventListener("keyup", stopKey, true);
+        this.canvas.addEventListener("keypress", stopKey, true);
+    },
+
+    async start() {
+        this.createPopup();
+        this.popup.style.display = "block";
+        this.active = true;
+
+        try {
+            await fetch("/specter/browser/start", { method: "POST" });
+            this.connectWS();
+            this.canvas.focus();
+        } catch (e) {
+            console.error("[Specter] Failed to start browser:", e);
+            this.popup.style.display = "none";
+        }
+    },
+
+    connectWS() {
+        const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+        this.ws = new WebSocket(`${protocol}//${location.host}/specter/browser/ws`);
+
+        this.ws.onmessage = (e) => {
+            if (typeof e.data === "string") {
+                const msg = JSON.parse(e.data);
+                if (msg.type === "logged_in") {
+                    console.log("[Specter] Login detected, auto-closing");
+                    this.stop();
+                }
+                return;
+            }
+            const blob = new Blob([e.data], { type: "image/png" });
+            const img = new Image();
+            img.onload = () => {
+                if (this.canvas.width !== img.width || this.canvas.height !== img.height) {
+                    this.canvas.width = img.width;
+                    this.canvas.height = img.height;
+                }
+                this.ctx.drawImage(img, 0, 0);
+                URL.revokeObjectURL(img.src);
+            };
+            img.src = URL.createObjectURL(blob);
+        };
+
+        this.ws.onclose = () => { if (this.active) setTimeout(() => this.connectWS(), 1000); };
+    },
+
+    async stop() {
+        this.active = false;
+        if (this.ws) { this.ws.close(); this.ws = null; }
+        if (this.popup) this.popup.style.display = "none";
+        try { await fetch("/specter/browser/stop", { method: "POST" }); } catch {}
+    }
+};
 
 // Color scheme - darker headers for light title text visibility
 const SPECTER_COLORS = {
@@ -56,65 +194,17 @@ app.registerExtension({
                 const container = document.createElement("div");
                 container.className = "flex items-center gap-4";
 
-                // Status text
                 const statusText = document.createElement("span");
                 statusText.className = "text-muted";
                 statusText.textContent = "Checking...";
 
-                // Login button - matches PrimeVue button styling
                 const loginBtn = document.createElement("button");
                 loginBtn.type = "button";
                 loginBtn.className = "p-button p-component";
-                loginBtn.innerHTML = `<span class="p-button-icon p-button-icon-left pi pi-user"></span><span class="p-button-label">Sign In</span>`;
 
                 container.append(statusText, loginBtn);
 
-                // Floating popup for browser
-                const popup = document.createElement("div");
-                popup.style.cssText = `
-                    display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-                    z-index: 10000; background: var(--comfy-menu-bg, #353535); border-radius: 8px;
-                    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
-                    padding: 12px; border: 1px solid var(--border-color, #4e4e4e);
-                `;
-
-                const popupHeader = document.createElement("div");
-                popupHeader.style.cssText = "display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; cursor: move;";
-                popupHeader.innerHTML = `<span style="color: var(--fg-color, #fff); font-weight: 500;">ChatGPT Login</span>`;
-
-                const closeBtn = document.createElement("button");
-                closeBtn.className = "p-button p-component p-button-primary";
-                closeBtn.innerHTML = `<span class="p-button-label">Save & Close</span>`;
-                popupHeader.appendChild(closeBtn);
-
-                const canvas = document.createElement("canvas");
-                canvas.style.cssText = "cursor: pointer; display: block; border-radius: 4px;";
-                canvas.tabIndex = 0;
-
-                popup.append(popupHeader, canvas);
-                document.body.appendChild(popup);
-
-                // Draggable popup
-                let dragging = false, dragX, dragY;
-                popupHeader.addEventListener("mousedown", (e) => {
-                    if (e.target === closeBtn || closeBtn.contains(e.target)) return;
-                    dragging = true;
-                    dragX = e.clientX - popup.offsetLeft;
-                    dragY = e.clientY - popup.offsetTop;
-                });
-                document.addEventListener("mousemove", (e) => {
-                    if (!dragging) return;
-                    popup.style.left = e.clientX - dragX + "px";
-                    popup.style.top = e.clientY - dragY + "px";
-                    popup.style.transform = "none";
-                });
-                document.addEventListener("mouseup", () => dragging = false);
-
-                // State
                 let isLoggedIn = false;
-                let ws = null;
-                let browserActive = false;
-                const ctx = canvas.getContext("2d");
 
                 const checkStatus = async () => {
                     try {
@@ -128,153 +218,19 @@ app.registerExtension({
                     }
                 };
 
-                const startBrowser = async () => {
-                    popup.style.display = "block";
-                    loginBtn.style.display = "none";
-                    statusText.textContent = "Starting...";
-
-                    try {
-                        await fetch("/specter/browser/start", { method: "POST" });
-                        connectWS();
-                        browserActive = true;
-                        canvas.focus();
-                        statusText.textContent = "Complete the login in the popup window";
-                    } catch (e) {
-                        statusText.textContent = "Failed";
-                        loginBtn.style.display = "inline-flex";
-                    }
-                };
-
-                const stopBrowser = async () => {
-                    browserActive = false;
-                    if (ws) { ws.close(); ws = null; }
-                    popup.style.display = "none";
-                    loginBtn.style.display = "inline-flex";
-                    statusText.textContent = "Saving...";
-
-                    try {
-                        await fetch("/specter/browser/stop", { method: "POST" });
-                        await checkStatus();
-                    } catch (e) {
-                        statusText.textContent = "Error";
-                    }
-                };
-
-                const connectWS = () => {
-                    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-                    ws = new WebSocket(`${protocol}//${location.host}/specter/browser/ws`);
-
-                    ws.onmessage = (e) => {
-                        // Handle JSON messages (login status)
-                        if (typeof e.data === "string") {
-                            const msg = JSON.parse(e.data);
-                            if (msg.type === "logged_in") {
-                                console.log("[Specter] Login detected, auto-closing");
-                                stopBrowser();
-                            }
-                            return;
-                        }
-
-                        // Handle binary screenshots
-                        const blob = new Blob([e.data], { type: "image/png" });
-                        const img = new Image();
-                        img.onload = () => {
-                            if (canvas.width !== img.width || canvas.height !== img.height) {
-                                canvas.width = img.width;
-                                canvas.height = img.height;
-                            }
-                            ctx.drawImage(img, 0, 0);
-                            URL.revokeObjectURL(img.src);
-                        };
-                        img.src = URL.createObjectURL(blob);
-                    };
-
-                    ws.onclose = () => { if (browserActive) setTimeout(connectWS, 1000); };
-                };
-
-                const send = (event) => {
-                    if (ws?.readyState === WebSocket.OPEN) {
-                        ws.send(JSON.stringify(event));
-                    }
-                };
-
-                const getCoords = (e) => {
-                    const rect = canvas.getBoundingClientRect();
-                    // Scale from CSS display size to internal canvas size
-                    const scaleX = canvas.width / rect.width;
-                    const scaleY = canvas.height / rect.height;
-                    return {
-                        x: (e.clientX - rect.left) * scaleX,
-                        y: (e.clientY - rect.top) * scaleY
-                    };
-                };
-
-                // Event handlers - use mousedown/mouseup for reliability
-                canvas.addEventListener("mousedown", (e) => {
-                    canvas.focus();
-                    e.preventDefault();
-                    e.stopPropagation();
-                    send({ type: "mousedown", ...getCoords(e) });
-                });
-                canvas.addEventListener("mouseup", (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    send({ type: "mouseup", ...getCoords(e) });
-                });
-                canvas.addEventListener("mousemove", (e) => {
-                    if (e.buttons === 1) send({ type: "mousemove", ...getCoords(e) });
-                });
-                canvas.addEventListener("wheel", (e) => {
-                    canvas.focus();
-                    e.preventDefault();
-                    e.stopPropagation();
-                    send({ type: "scroll", dx: e.deltaX, dy: e.deltaY });
-                }, { passive: false });
-
-                const stopKey = (e) => { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation(); };
-                canvas.addEventListener("keydown", async (e) => {
-                    stopKey(e);
-                    const hasCtrl = e.ctrlKey || e.metaKey;
-
-                    // Handle paste specially - read clipboard and type it
-                    if (hasCtrl && e.key.toLowerCase() === "v") {
-                        try {
-                            const text = await navigator.clipboard.readText();
-                            if (text) send({ type: "type", text });
-                        } catch (err) { console.warn("Clipboard access denied"); }
-                        return;
-                    }
-
-                    const mods = [];
-                    if (hasCtrl) mods.push("Control");
-                    if (e.altKey) mods.push("Alt");
-                    if (e.shiftKey) mods.push("Shift");
-
-                    if (mods.length > 0) {
-                        send({ type: "keydown", key: [...mods, e.key].join("+") });
-                    } else if (e.key.length === 1) {
-                        send({ type: "type", text: e.key });
-                    } else {
-                        send({ type: "keydown", key: e.key });
-                    }
-                }, true);
-                canvas.addEventListener("keyup", stopKey, true);
-                canvas.addEventListener("keypress", stopKey, true);
-
                 loginBtn.addEventListener("click", async () => {
                     if (isLoggedIn) {
                         await fetch("/specter/logout", { method: "POST" });
                         await checkStatus();
                     } else {
-                        await startBrowser();
+                        await specterLogin.start();
                     }
                 });
 
-                closeBtn.addEventListener("click", stopBrowser);
                 checkStatus();
-
-                // Export login function for backend trigger
-                specterStartLogin = startBrowser;
+                // Re-check status when login popup closes
+                const origStop = specterLogin.stop.bind(specterLogin);
+                specterLogin.stop = async () => { await origStop(); await checkStatus(); };
 
                 return container;
             },
@@ -315,11 +271,7 @@ app.registerExtension({
 // Listen for login required event from backend
 api.addEventListener("specter-login-required", () => {
     console.log("[Specter] Login required - opening authentication popup");
-    if (specterStartLogin) {
-        specterStartLogin();
-    } else {
-        alert("ChatGPT login required. Please go to Settings > Specter > Authentication and click Sign In.");
-    }
+    specterLogin.start();
 });
 
 console.log("[Specter] Appearance extension loaded");
