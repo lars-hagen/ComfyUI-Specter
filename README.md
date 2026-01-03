@@ -6,7 +6,7 @@
 
 **Use ChatGPT's image generation and GPT models in ComfyUI, completely free.** No API keys, no per-image costs. Just your existing ChatGPT account (even free tier works).
 
-*Specter is a stealthy browser phantom that automates ChatGPT's web interface in the background. Fully headless, fully automatic.*
+*Specter is a stealthy browser phantom that automates ChatGPT's web interface in the background. Headless and invisible.*
 
 ![demo](demo.jpg)
 
