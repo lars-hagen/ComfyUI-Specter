@@ -2,9 +2,7 @@
 
 Browser automation nodes for AI web interfaces. Access ChatGPT models through the web UI instead of expensive API calls.
 
-![demo](image.png)
-
-https://github.com/user-attachments/assets/265ad87a-1fc4-426e-8c88-d7e2505cc544
+![demo](https://github.com/user-attachments/assets/24f0f9c5-5ae5-4e51-b9c9-8f9a1c7d7ad4)
 
 ## How It Works
 
@@ -28,37 +26,6 @@ flowchart LR
 | **GPT-5.2** | $2.50/1M tokens | **Included in subscription** |
 | **o3 Reasoning** | $10-20/1M tokens | **Included in Plus/Pro** |
 
-## Image Capabilities (gpt-image-1.5)
-
-**Generation**
-- Text-to-Image                                                       
-- Image editing (img2img)  
-- Text rendering in images (posters, infographics)
-
-**Editing**
-- Inpainting
-- Object add/remove
-- Background replacement
-- Style transfer
-- Clothing/appearance changes
-
-**Preservation**
-- Facial likeness consistency
-- Lighting/composition matching
-- Color tone preservation
-
-## Model Access by Subscription
-
-| Model | Free | Go ($5) | Plus ($20) | Pro ($200) |
-|-------|------|---------|------------|------------|
-| **gpt-image-1.5** | 2-3/day | Extended | 50/3hr | Unlimited |
-| **gpt-5.2** | 10/5hr | 10-30/day | 160/3hr | Unlimited |
-| **gpt-5.2-instant** | Fallback | Default | Full | Unlimited |
-| **gpt-5.2-thinking** | 1/day | Auto | Full | Unlimited |
-| **o3** | - | - | 100/week | Unlimited |
-| **o4-mini** | - | - | 300/day | Unlimited |
-| **gpt-4o** | Limited | - | 80/3hr | Unlimited |
-
 ## Installation
 
 1. Clone to your ComfyUI `custom_nodes` folder:
@@ -76,36 +43,65 @@ flowchart LR
 
 3. Restart ComfyUI
 
+4. **Authenticate with ChatGPT:**
+   - Open ComfyUI Settings (gear icon)
+   - Navigate to **Specter > Authentication**
+   - Click **Sign In** and complete login in the popup
+   - Session saves automatically for future use
+
 ## Nodes
 
-| Node | Description |
-|------|-------------|
-| **Specter ChatGPT** | Send prompts to ChatGPT, get text + generated images |
-
-## Usage
-
-1. Add **Specter ChatGPT** node to workflow
-2. First run opens browser - log in to ChatGPT
-3. Session saved automatically
-4. Future runs are headless
-
-Use `force_login` to re-authenticate if session expires.
+| Node | Category | Description |
+|------|----------|-------------|
+| **ChatGPT Multimodal** | Specter | Full-featured node with text + image input/output |
+| **ChatGPT Image** | Specter/Core | Optimized for image generation (uses gpt-image-1.5) |
+| **ChatGPT Text** | Specter/Core | Text-only responses, faster for text tasks |
+| **Prompt Enhancer** | Specter/Tools | Enhance basic prompts for better image results |
+| **Image Describer** | Specter/Tools | Generate detailed descriptions from images |
 
 ## Example Workflows
 
 | Workflow | Description |
 |----------|-------------|
-| [txt2img_basic](example_workflows/txt2img_basic.json) | Text-to-image generation |
-| [img2img_edit](example_workflows/img2img_edit.json) | Edit/transform existing images |
-| [prompt_enhancer](example_workflows/prompt_enhancer.json) | Enhance basic prompts with GPT |
+| [txt2img_basic](example_workflows/txt2img_basic.json) | Text-to-image generation with ChatGPT Image |
+| [img2img_edit](example_workflows/img2img_edit.json) | Edit images with ChatGPT Multimodal |
+| [prompt_enhancer](example_workflows/prompt_enhancer.json) | Enhance prompts before image generation |
 | [image_describer](example_workflows/image_describer.json) | Generate descriptions from images |
+
+## Image Capabilities (gpt-image-1.5)
+
+**Generation**
+- Text-to-Image
+- Image editing (img2img)
+- Text rendering in images (posters, infographics)
+
+**Editing**
+- Inpainting
+- Object add/remove
+- Background replacement
+- Style transfer
+- Clothing/appearance changes
+
+**Preservation**
+- Facial likeness consistency
+- Lighting/composition matching
+- Color tone preservation
+
+## Model Access by Subscription
+
+| Model | Free | Plus ($20) | Pro ($200) |
+|-------|------|------------|------------|
+| **gpt-image-1.5** | 2-3/day | 50/3hr | Unlimited |
+| **gpt-5.2** | 10/5hr | 160/3hr | Unlimited |
+| **gpt-5.2-instant** | Fallback | Full | Unlimited |
+| **o3** | - | 100/week | Unlimited |
 
 ## Troubleshooting
 
-- **Session expired?** Enable `force_login` input
+- **Session expired?** Go to Settings > Specter > Authentication and click Sign In
 - **Browser not closing?** Check for zombie Firefox processes
 - **Login loop?** Delete `chatgpt_session.json` and retry
 
 ## Coming Soon
 
-- Gemini
+- Gemini support

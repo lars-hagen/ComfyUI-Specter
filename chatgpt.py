@@ -5,13 +5,16 @@ import json
 import os
 import tempfile
 import time
+import uuid
 
 import numpy as np
 import torch
 from PIL import Image
 
-from .specter import get_session, load_session, delete_session, is_logged_in, interactive_login
+from .specter import load_session, is_logged_in, interactive_login
+from .config import get_all_model_ids, get_image_sizes, get_size_resolution, get_image_model_config, TOOLTIPS
 
+# Browser selectors
 SELECTORS = {
     "textarea": "#prompt-textarea",
     "send_button": '[data-testid="send-button"]',
@@ -35,7 +38,12 @@ CHATGPT_CONFIG = {
 }
 
 
+# =============================================================================
+# UTILITIES
+# =============================================================================
+
 def tensor_to_pil(tensor: torch.Tensor) -> Image.Image:
+    """Convert tensor to PIL Image."""
     if tensor.dim() == 4:
         tensor = tensor[0]
     arr = (tensor.cpu().numpy() * 255).astype(np.uint8)
@@ -43,6 +51,7 @@ def tensor_to_pil(tensor: torch.Tensor) -> Image.Image:
 
 
 def bytes_to_tensor(image_bytes: bytes) -> torch.Tensor:
+    """Convert image bytes to tensor."""
     from io import BytesIO
     img = Image.open(BytesIO(image_bytes)).convert("RGB")
     arr = np.array(img).astype(np.float32) / 255.0
@@ -50,21 +59,26 @@ def bytes_to_tensor(image_bytes: bytes) -> torch.Tensor:
 
 
 def empty_image_tensor() -> torch.Tensor:
-    """Return 1x1 black image tensor for when no image is generated."""
+    """Return 1x1 black image tensor."""
     return torch.zeros((1, 1, 1, 3), dtype=torch.float32)
 
 
 def log(msg):
+    """Log with timestamp."""
     from datetime import datetime
     ts = datetime.now().strftime("%H:%M:%S")
-    print(f"[Specter:ChatGPT {ts}] {msg}")
+    print(f"[Specter {ts}] {msg}")
 
+
+# =============================================================================
+# CORE CHAT FUNCTION
+# =============================================================================
 
 async def chat_with_gpt(
     prompt: str,
     model: str,
     image_path: str = None,
-    force_login: bool = False,
+    system_message: str = None,
     pbar=None,
     preview: bool = False,
 ) -> tuple[str, bytes | None]:
@@ -120,16 +134,10 @@ async def chat_with_gpt(
     progress(5)
     log("Starting...")
 
-    if force_login:
-        log("Force login requested")
-        delete_session("chatgpt")
-
     session = load_session("chatgpt")
     log("Session loaded" if session else "No session found")
 
     browser = None
-    ctx = None
-    page = None
 
     try:
         browser = await AsyncCamoufox(headless=True, humanize=False, window=(767, 1800)).__aenter__()
@@ -137,14 +145,31 @@ async def chat_with_gpt(
         page = await ctx.new_page()
         page.on("response", handle_response)
 
+        # Request interceptor for model and system message
         async def intercept(route):
             try:
                 post_data = route.request.post_data
                 if post_data:
                     body = json.loads(post_data)
+                    modified = False
+
                     if 'model' in body and body['model'] != model:
                         log(f"Model: {body['model']} -> {model}")
                         body['model'] = model
+                        modified = True
+
+                    if system_message and 'messages' in body and body['messages']:
+                        system_msg = {
+                            "id": str(uuid.uuid4()),
+                            "author": {"role": "system"},
+                            "content": {"content_type": "text", "parts": [system_message]},
+                            "metadata": {}
+                        }
+                        body['messages'].insert(0, system_msg)
+                        log(f"System: {system_message[:50]}...")
+                        modified = True
+
+                    if modified:
                         await route.continue_(post_data=json.dumps(body))
                         return
             except:
@@ -203,18 +228,14 @@ async def chat_with_gpt(
                 break
             await asyncio.sleep(0.5)
 
+        # Wait for completion
         download_btn = 'button[aria-label="Download this image"]'
         thumbs_up = 'button[data-testid="good-response-turn-action-button"]'
         wait_start = time.time()
-        last_preview = 0
 
+        last_preview = 0
         while time.time() - wait_start < 300:
             await asyncio.sleep(0.5)
-            if preview and time.time() - last_preview > 3:
-                await update_preview(page)
-                last_preview = time.time()
-                if preview_image[0]:
-                    pbar.update_absolute(current_progress[0], 100, ("JPEG", preview_image[0], None))
             try:
                 if await page.locator(download_btn).count() > 0:
                     log("Image complete")
@@ -225,6 +246,9 @@ async def chat_with_gpt(
             except:
                 pass
             elapsed = time.time() - wait_start
+            if elapsed - last_preview >= 3:
+                await update_preview(page)
+                last_preview = elapsed
             if int(elapsed) % 10 == 0:
                 progress(min(50 + int(elapsed / 6), 85))
 
@@ -254,50 +278,128 @@ async def chat_with_gpt(
         except:
             pass
 
-        progress(100)
-        if preview:
-            await update_preview(page)
-            if preview_image[0]:
-                pbar.update_absolute(100, 100, ("JPEG", preview_image[0], None))
+        progress(95)
+        await update_preview(page)
 
+        progress(100)
         log(f"Done: {len(response_text)} chars, image: {'yes' if captured_images else 'no'}")
         return response_text, captured_images[-1] if captured_images else None
 
     except asyncio.CancelledError:
-        log("Interrupted - cleaning up browser...")
+        log("Interrupted")
         raise
     finally:
         if browser:
             try:
                 await browser.__aexit__(None, None, None)
-                log("Browser closed")
             except:
                 pass
 
 
+# =============================================================================
+# HELPER FUNCTIONS
+# =============================================================================
+
+def _get_models():
+    """Get models list with fallback."""
+    try:
+        return get_all_model_ids()
+    except:
+        return ["gpt-image-1.5", "gpt-5.2-instant", "gpt-5.2", "gpt-4o"]
+
+
+def _get_sizes():
+    """Get sizes list with fallback."""
+    try:
+        return get_image_sizes()
+    except:
+        return ["Auto", "Square (1024x1024)", "Landscape (1536x1024)", "Portrait (1024x1536)"]
+
+
+async def _run_chatgpt(prompt: str, model: str, image=None, size: str = "Auto", system_message: str = None, preview: bool = False):
+    """Shared run logic for ChatGPT nodes."""
+    from comfy.utils import ProgressBar
+
+    actual_model = model
+    final_prompt = prompt
+
+    # Handle image model
+    image_config = get_image_model_config(model)
+    if image_config:
+        actual_model = image_config.get("actual_model", "gpt-5.2-instant")
+        prefix = image_config.get("prompt_prefix_edit" if image is not None else "prompt_prefix_new", "Use image_gen:")
+        final_prompt = f"{prefix} {prompt}"
+
+    # Add size instruction
+    if size and size.lower() != "auto":
+        resolution = get_size_resolution(size)
+        if resolution:
+            final_prompt = f"{final_prompt}\n\n[Generate at {resolution}.]"
+
+    image_path = None
+    if image is not None:
+        pil_img = tensor_to_pil(image)
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            pil_img.save(f.name)
+            image_path = f.name
+
+    try:
+        pbar = ProgressBar(100)
+        response_text, image_bytes = await chat_with_gpt(
+            final_prompt, actual_model, image_path,
+            system_message=system_message if system_message and system_message.strip() else None,
+            pbar=pbar,
+            preview=preview,
+        )
+        output_image = bytes_to_tensor(image_bytes) if image_bytes else empty_image_tensor()
+        return response_text, output_image
+    finally:
+        if image_path and os.path.exists(image_path):
+            os.unlink(image_path)
+
+
+# =============================================================================
+# MAIN NODE - Single consolidated ChatGPT node
+# =============================================================================
+
 class ChatGPTNode:
-    """Send prompts to ChatGPT via browser automation."""
+    """ChatGPT - Text and image generation via browser automation."""
 
     CATEGORY = "Specter"
 
     @classmethod
     def INPUT_TYPES(cls):
+        models = _get_models()
+        sizes = _get_sizes()
         return {
             "required": {
-                "prompt": ("STRING", {"multiline": True, "default": ""}),
-                "model": ([
-                    "gpt-image-1.5",
-                    "gpt-5.2", "gpt-5.2-instant", "gpt-5.2-thinking",
-                    "gpt-5.1-instant", "gpt-5.1-thinking",
-                    "gpt-5-instant", "gpt-5-thinking-mini", "gpt-5-thinking",
-                    "gpt-4o", "gpt-4.1", "o3", "o4-mini",
-                ],),
+                "prompt": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                    "tooltip": TOOLTIPS.get("prompt", "Text prompt to send to ChatGPT.")
+                }),
+                "model": (models, {
+                    "default": models[0] if models else "gpt-image-1.5",
+                    "tooltip": TOOLTIPS.get("model", "ChatGPT model to use.")
+                }),
             },
             "optional": {
-                "image": ("IMAGE",),
-                "size": (["auto", "1024x1024 (square)", "1536x1024 (landscape)", "1024x1536 (portrait)"], {"default": "auto"}),
-                "preview": ("BOOLEAN", {"default": True}),
-                "force_login": ("BOOLEAN", {"default": False}),
+                "system_message": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                    "tooltip": TOOLTIPS.get("system_message", "System message to set AI behavior.")
+                }),
+                "image": ("IMAGE", {
+                    "tooltip": TOOLTIPS.get("image", "Input image for vision/editing.")
+                }),
+                "size": (sizes, {
+                    "default": sizes[0] if sizes else "Auto",
+                    "tooltip": TOOLTIPS.get("size", "Output image size.")
+                }),
+                "preview": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Show browser window during generation."
+                }),
             }
         }
 
@@ -305,37 +407,5 @@ class ChatGPTNode:
     RETURN_NAMES = ("response", "image")
     FUNCTION = "run"
 
-    async def run(self, prompt: str, model: str, image=None, size: str = "auto", preview: bool = True, force_login: bool = False):
-        from comfy.utils import ProgressBar
-
-        # Handle virtual gpt-image-1.5 model
-        actual_model = model
-        final_prompt = prompt
-        if model == "gpt-image-1.5":
-            actual_model = "gpt-5.2-instant"
-            if image is not None:
-                final_prompt = f"Use image_gen to edit this image: {prompt}"
-            else:
-                final_prompt = f"Use image_gen to create: {prompt}"
-
-        if size != "auto":
-            res = size.split(" ")[0]  # Extract "1024x1024" from "1024x1024 (square)"
-            final_prompt = f"{final_prompt}\n\n[Generate image at {res} resolution.]"
-
-        image_path = None
-        if image is not None:
-            pil_img = tensor_to_pil(image)
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-                pil_img.save(f.name)
-                image_path = f.name
-
-        try:
-            pbar = ProgressBar(100)
-            response_text, image_bytes = await chat_with_gpt(
-                final_prompt, actual_model, image_path, force_login=force_login, pbar=pbar, preview=preview
-            )
-            output_image = bytes_to_tensor(image_bytes) if image_bytes else empty_image_tensor()
-            return (response_text, output_image)
-        finally:
-            if image_path and os.path.exists(image_path):
-                os.unlink(image_path)
+    async def run(self, prompt: str, model: str, system_message: str = None, image=None, size: str = "Auto", preview: bool = False):
+        return await _run_chatgpt(prompt, model, image, size, system_message, preview)
