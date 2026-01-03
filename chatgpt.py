@@ -63,11 +63,11 @@ def empty_image_tensor() -> torch.Tensor:
     return torch.zeros((1, 1, 1, 3), dtype=torch.float32)
 
 
-def log(msg):
-    """Log with timestamp."""
+def log(msg, symbol="▸"):
+    """Log with timestamp and symbol."""
     from datetime import datetime
     ts = datetime.now().strftime("%H:%M:%S")
-    print(f"[Specter {ts}] {msg}")
+    print(f"[Specter {ts}] {symbol} {msg}")
 
 
 # =============================================================================
@@ -126,16 +126,17 @@ async def chat_with_gpt(
                     data = await response.body()
                     if len(data) > 500000:
                         captured_images.append(data)
-                        log(f"Captured image: {len(data)} bytes")
+                        size_kb = len(data) // 1024
+                        log(f"Captured generated image ({size_kb}KB)", "◆")
                         progress(min(50 + len(captured_images) * 15, 95))
                 except:
                     pass
 
     progress(5)
-    log("Starting...")
+    log("Launching headless browser...", "◈")
 
     session = load_session("chatgpt")
-    log("Session loaded" if session else "No session found")
+    log("Session restored - skipping login" if session else "No saved session", "○" if session else "○")
 
     browser = None
 
@@ -154,7 +155,7 @@ async def chat_with_gpt(
                     modified = False
 
                     if 'model' in body and body['model'] != model:
-                        log(f"Model: {body['model']} -> {model}")
+                        log(f"Intercepting request: {body['model']} → {model}", "⟳")
                         body['model'] = model
                         modified = True
 
@@ -166,7 +167,7 @@ async def chat_with_gpt(
                             "metadata": {}
                         }
                         body['messages'].insert(0, system_msg)
-                        log(f"System: {system_message[:50]}...")
+                        log(f"Injecting system prompt: \"{system_message[:40]}...\"", "⟳")
                         modified = True
 
                     if modified:
@@ -182,7 +183,7 @@ async def chat_with_gpt(
         await page.goto("https://chatgpt.com/", timeout=60000)
 
         if not await is_logged_in(page, LOGIN_SELECTORS):
-            log("Not logged in, starting login...")
+            log("Authentication required - opening login flow...", "!")
             await page.close()
             await ctx.close()
             session = await interactive_login(**CHATGPT_CONFIG)
@@ -194,10 +195,10 @@ async def chat_with_gpt(
             await page.wait_for_selector(SELECTORS["textarea"], state="visible", timeout=30000)
 
         progress(20)
-        log("Ready")
+        log("Connected to ChatGPT", "●")
 
         if image_path:
-            log("Uploading image...")
+            log("Attaching input image...", "↑")
             await page.locator('input[type="file"]').first.set_input_files(image_path)
             await asyncio.sleep(0.5)
             progress(25)
@@ -215,7 +216,7 @@ async def chat_with_gpt(
 
         listening = True
         await page.keyboard.press("Enter")
-        log("Sent")
+        log("Prompt sent - awaiting response...", "→")
         await asyncio.sleep(0.3)
         await update_preview(page)
         progress(40)
@@ -238,10 +239,10 @@ async def chat_with_gpt(
             await asyncio.sleep(0.5)
             try:
                 if await page.locator(download_btn).count() > 0:
-                    log("Image complete")
+                    log("Image generation complete", "✦")
                     break
                 if await page.locator(thumbs_up).count() > 0:
-                    log("Text complete")
+                    log("Response complete", "✓")
                     break
             except:
                 pass
@@ -282,11 +283,14 @@ async def chat_with_gpt(
         await update_preview(page)
 
         progress(100)
-        log(f"Done: {len(response_text)} chars, image: {'yes' if captured_images else 'no'}")
+        if captured_images:
+            log(f"Success: {len(response_text)} chars + image captured", "★")
+        else:
+            log(f"Success: {len(response_text)} chars", "★")
         return response_text, captured_images[-1] if captured_images else None
 
     except asyncio.CancelledError:
-        log("Interrupted")
+        log("Interrupted by user", "✕")
         raise
     finally:
         if browser:
