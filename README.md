@@ -51,11 +51,11 @@ flowchart LR
 
 3. Restart ComfyUI
 
-4. **Authenticate with ChatGPT:**
-   - Open ComfyUI Settings (gear icon)
-   - Navigate to **Specter > Authentication**
-   - Click **Sign In** and complete login in the popup
-   - Session saves automatically for future use
+4. **Authenticate with ChatGPT** (choose one):
+   - **Automatic:** Just run any Specter node - a login popup appears if needed
+   - **Manual:** Go to Settings > Specter > Authentication > Sign In
+
+   Session saves automatically for future use.
 
 ## Nodes
 
