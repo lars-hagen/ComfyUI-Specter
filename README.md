@@ -4,7 +4,9 @@
 [![ComfyUI](https://img.shields.io/badge/ComfyUI-Custom_Node-blue)](https://github.com/comfyanonymous/ComfyUI)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 
-**A stealthy browser ghost that haunts ChatGPT's web interface so you don't have to.** Generate images, enhance prompts, and chat with GPT models — all without API costs. Just your existing ChatGPT account (even free tier).
+**Use ChatGPT's image generation and GPT models in ComfyUI, completely free.** No API keys, no per-image costs. Just your existing ChatGPT account (even free tier works).
+
+*Specter is a stealthy browser phantom that automates ChatGPT's web interface in the background. Fully headless, fully automatic.*
 
 ![demo](demo.jpg)
 
