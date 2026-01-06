@@ -1,343 +1,475 @@
-"""Specialized Specter nodes for different use cases."""
+"""Specter nodes for ComfyUI."""
 
-import os
-import tempfile
-
-import numpy as np
-import torch
-from PIL import Image
-
-from .chatgpt import chat_with_gpt, bytes_to_tensor, tensor_to_pil, empty_image_tensor
-from .config import (
-    get_all_model_ids,
-    get_model_ids,
+from .core.config import (
+    TOOLTIPS,
+    get_image_model,
+    get_image_models,
     get_image_sizes,
-    get_size_resolution,
-    get_image_model_config,
-    get_preset_names,
+    get_models,
     get_preset_prompt,
     get_presets_by_category,
-    TOOLTIPS,
+    get_size_resolution,
 )
+from .core.utils import bytes_list_to_tensor, bytes_to_tensor, empty_image_tensor, temp_image
+from .providers.chatgpt import chat_with_gpt
+from .providers.grok import SIZES, VIDEO_MODES, chat_with_grok, imagine_edit, imagine_i2v, imagine_t2i, imagine_t2v
+
+# Size names for Grok Imagine
+GROK_SIZES = list(SIZES.keys())
+GROK_MODES = list(VIDEO_MODES.keys())
 
 
 # =============================================================================
-# TEXT-ONLY NODE
+# CHATGPT NODES
 # =============================================================================
+
 
 class ChatGPTTextNode:
-    """Text-only ChatGPT node - no image generation, faster for text tasks."""
+    """Text chat with ChatGPT."""
 
-    CATEGORY = "Specter/Core"
+    DISPLAY_NAME = "ChatGPT Text"
+    CATEGORY = "Specter/text/ChatGPT"
 
     @classmethod
     def INPUT_TYPES(cls):
-        models = get_model_ids("text")
+        models = get_models("chatgpt") or ["gpt-5.1-instant"]
         return {
             "required": {
-                "prompt": ("STRING", {
-                    "multiline": True,
-                    "default": "",
-                    "tooltip": TOOLTIPS["prompt"]
-                }),
-                "model": (models, {
-                    "default": models[0] if models else "gpt-5.2-instant",
-                    "tooltip": TOOLTIPS["model"]
-                }),
+                "prompt": ("STRING", {"multiline": True, "default": "", "tooltip": TOOLTIPS["prompt"]}),
+                "model": (models, {"default": models[0], "tooltip": TOOLTIPS["model"]}),
             },
             "optional": {
-                "system_message": ("STRING", {
-                    "multiline": True,
-                    "default": "",
-                    "tooltip": TOOLTIPS["system_message"]
-                }),
-                "image": ("IMAGE", {
-                    "tooltip": TOOLTIPS["image"]
-                }),
-                "preview": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": "Show browser window during generation."
-                }),
-            }
+                "system_message": ("STRING", {"multiline": True, "default": "", "tooltip": TOOLTIPS["system_message"]}),
+                "image": ("IMAGE", {"tooltip": TOOLTIPS["image"]}),
+            },
         }
 
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("response",)
     FUNCTION = "run"
 
-    async def run(self, prompt: str, model: str, system_message: str = None,
-                  image=None, preview: bool = False):
+    async def run(self, prompt: str, model: str, system_message: str | None = None, image=None):
         from comfy.utils import ProgressBar
 
-        image_path = None
-        if image is not None:
-            pil_img = tensor_to_pil(image)
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-                pil_img.save(f.name)
-                image_path = f.name
-
-        try:
+        with temp_image(image) as image_path:
             pbar = ProgressBar(100)
-            response_text, _ = await chat_with_gpt(
-                prompt, model, image_path,
+            text, _ = await chat_with_gpt(
+                prompt,
+                model,
+                image_path,
                 system_message=system_message if system_message and system_message.strip() else None,
                 pbar=pbar,
-                preview=preview,
             )
-            return (response_text,)
-        finally:
-            if image_path and os.path.exists(image_path):
-                os.unlink(image_path)
+            return (text,)
 
-
-# =============================================================================
-# IMAGE-ONLY NODE
-# =============================================================================
 
 class ChatGPTImageNode:
-    """Image generation node - optimized for image output."""
+    """Image generation with ChatGPT."""
 
-    CATEGORY = "Specter/Core"
+    DISPLAY_NAME = "ChatGPT Image"
+    CATEGORY = "Specter/image/ChatGPT"
 
     @classmethod
     def INPUT_TYPES(cls):
-        sizes = get_image_sizes()
+        image_models = get_image_models("chatgpt") or ["gpt-image-1.5"]
+        sizes = get_image_sizes() or ["Auto"]
         return {
             "required": {
-                "prompt": ("STRING", {
-                    "multiline": True,
-                    "default": "",
-                    "tooltip": "Describe the image you want to generate."
-                }),
-                "model": (["gpt-image-1.5"], {
-                    "default": "gpt-image-1.5",
-                    "tooltip": "ChatGPT image generation model."
-                }),
+                "prompt": ("STRING", {"multiline": True, "default": "", "tooltip": "Image description."}),
             },
             "optional": {
-                "image": ("IMAGE", {
-                    "tooltip": "Optional reference image for editing or style guidance."
-                }),
-                "size": (sizes, {
-                    "default": sizes[0] if sizes else "Auto",
-                    "tooltip": TOOLTIPS["size"]
-                }),
-                "preview": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": "Show browser window during generation."
-                }),
-            }
+                "model": (image_models, {"default": image_models[0], "tooltip": "Image model."}),
+                "image": ("IMAGE", {"tooltip": "Reference image for editing."}),
+                "size": (sizes, {"default": sizes[0], "tooltip": TOOLTIPS["size"]}),
+            },
         }
 
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("image",)
     FUNCTION = "run"
 
-    async def run(self, prompt: str, model: str = "gpt-image-1.5", image=None, size: str = "Auto", preview: bool = False):
+    async def run(self, prompt: str, model: str = "gpt-image-1.5", image=None, size: str = "Auto"):
         from comfy.utils import ProgressBar
 
-        # Get image model config (uses gpt-image-1.5)
-        model_config = get_image_model_config("gpt-image-1.5")
-        actual_model = model_config.get("actual_model", "gpt-5.2-instant") if model_config else "gpt-5.2-instant"
+        config = get_image_model("chatgpt", model)
+        proxy_model = config.get("proxy_model", "gpt-5.1-instant")
+        prefix = config.get("edit_prefix" if image is not None else "prompt_prefix", "")
 
-        # Build prompt with image generation prefix
-        if image is not None:
-            prefix = model_config.get("prompt_prefix_edit", "Use image_gen to edit this image:") if model_config else "Use image_gen to edit this image:"
-        else:
-            prefix = model_config.get("prompt_prefix_new", "Use image_gen to create:") if model_config else "Use image_gen to create:"
-
-        final_prompt = f"{prefix} {prompt}"
-
-        # Add size instruction
+        final_prompt = f"{prefix} {prompt}" if prefix else prompt
         resolution = get_size_resolution(size)
         if resolution:
-            final_prompt = f"{final_prompt}\n\n[Generate image at {resolution} resolution.]"
+            final_prompt = f"{final_prompt}\n\n[Generate at {resolution}.]"
 
-        image_path = None
-        if image is not None:
-            pil_img = tensor_to_pil(image)
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-                pil_img.save(f.name)
-                image_path = f.name
-
-        try:
+        with temp_image(image) as image_path:
             pbar = ProgressBar(100)
-            _, image_bytes = await chat_with_gpt(
-                final_prompt, actual_model, image_path, pbar=pbar, preview=preview
-            )
-
-            if image_bytes:
-                return (bytes_to_tensor(image_bytes),)
-            return (empty_image_tensor(),)
-        finally:
-            if image_path and os.path.exists(image_path):
-                os.unlink(image_path)
+            _, image_bytes = await chat_with_gpt(final_prompt, proxy_model, image_path, pbar=pbar, _expect_image=True)
+            return (bytes_to_tensor(image_bytes) if image_bytes else empty_image_tensor(),)
 
 
 # =============================================================================
-# PROMPT ENHANCER NODE
+# GROK NODES
 # =============================================================================
 
-class PromptEnhancerNode:
-    """Enhance prompts for better image generation results."""
 
-    CATEGORY = "Specter/Tools"
+class GrokTextNode:
+    """Text chat with Grok."""
+
+    DISPLAY_NAME = "Grok Text"
+    CATEGORY = "Specter/text/Grok"
 
     @classmethod
     def INPUT_TYPES(cls):
-        models = get_model_ids("text")
-        enhancement_presets = get_presets_by_category("prompt_enhancement")
-        if not enhancement_presets:
-            enhancement_presets = ["prompt_enhancer"]
-
+        models = get_models("grok") or ["grok-3"]
         return {
             "required": {
-                "input_prompt": ("STRING", {
-                    "multiline": True,
-                    "default": "",
-                    "tooltip": TOOLTIPS["input_prompt"]
-                }),
+                "prompt": ("STRING", {"multiline": True, "default": "", "tooltip": TOOLTIPS["prompt"]}),
+                "model": (models, {"default": models[0], "tooltip": TOOLTIPS["model"]}),
             },
             "optional": {
-                "model": (models, {
-                    "default": "gpt-5.2-instant",
-                    "tooltip": TOOLTIPS["model"]
-                }),
-                "enhancement_style": (enhancement_presets, {
-                    "default": enhancement_presets[0],
-                    "tooltip": TOOLTIPS["enhancement_style"]
-                }),
-                "custom_instruction": ("STRING", {
-                    "multiline": True,
-                    "default": "",
-                    "tooltip": "Custom enhancement instruction (overrides style preset)."
-                }),
-                "preview": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": "Show browser window during generation."
-                }),
-            }
+                "system_message": ("STRING", {"multiline": True, "default": "", "tooltip": TOOLTIPS["system_message"]}),
+                "image": ("IMAGE", {"tooltip": TOOLTIPS["image"]}),
+                "preview": ("BOOLEAN", {"default": False, "tooltip": "Show browser preview."}),
+            },
         }
 
     RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("enhanced_prompt",)
+    RETURN_NAMES = ("response",)
     FUNCTION = "run"
 
-    async def run(self, input_prompt: str, model: str = "gpt-5.2-instant",
-                  enhancement_style: str = "prompt_enhancer",
-                  custom_instruction: str = None, preview: bool = False):
+    async def run(self, prompt: str, model: str, system_message: str | None = None, image=None, preview: bool = False):
         from comfy.utils import ProgressBar
 
-        # Get system prompt
-        if custom_instruction and custom_instruction.strip():
-            system_message = custom_instruction.strip()
-        else:
-            system_message = get_preset_prompt(enhancement_style)
-            if not system_message:
-                system_message = "Enhance this prompt for image generation. Add artistic details, lighting, composition, and style. Output only the enhanced prompt, no explanations."
+        with temp_image(image) as image_path:
+            pbar = ProgressBar(100)
+            text, _ = await chat_with_grok(
+                prompt,
+                model,
+                image_path,
+                system_message=system_message if system_message and system_message.strip() else None,
+                pbar=pbar,
+                preview=preview,
+            )
+            return (text,)
+
+
+class GrokImageNode:
+    """Image generation with Grok Imagine."""
+
+    DISPLAY_NAME = "Grok Image"
+    CATEGORY = "Specter/image/Grok"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "prompt": ("STRING", {"multiline": True, "default": "", "tooltip": "Image description."}),
+            },
+            "optional": {
+                "size": (GROK_SIZES, {"default": GROK_SIZES[0], "tooltip": "Image size/aspect ratio."}),
+                "max_images": ("INT", {"default": 1, "min": 1, "max": 6, "tooltip": "Number of images to generate."}),
+                "preview": ("BOOLEAN", {"default": False, "tooltip": "Show browser preview."}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("images",)
+    FUNCTION = "run"
+
+    async def run(
+        self,
+        prompt: str,
+        size: str = "Square (960x960)",
+        max_images: int = 4,
+        preview: bool = False,
+    ):
+        from comfy.utils import ProgressBar
 
         pbar = ProgressBar(100)
-        response_text, _ = await chat_with_gpt(
-            input_prompt, model, None,
-            system_message=system_message, pbar=pbar, preview=preview
-        )
-        return (response_text,)
+        images = await imagine_t2i(prompt, size=size, max_images=max_images, pbar=pbar, preview=preview)
+        return (bytes_list_to_tensor(images),)
 
 
-# =============================================================================
-# IMAGE DESCRIBER NODE
-# =============================================================================
+class GrokImageEditNode:
+    """Image editing with Grok Imagine."""
 
-class ImageDescriberNode:
-    """Describe images using ChatGPT vision capabilities."""
-
-    CATEGORY = "Specter/Tools"
+    DISPLAY_NAME = "Grok Image Edit"
+    CATEGORY = "Specter/image/Grok"
 
     @classmethod
     def INPUT_TYPES(cls):
-        models = get_model_ids("text")
-        description_presets = get_presets_by_category("image_description")
-        if not description_presets:
-            description_presets = ["image_describer"]
-
         return {
             "required": {
-                "image": ("IMAGE", {
-                    "tooltip": "The image to describe."
-                }),
+                "image": ("IMAGE", {"tooltip": "Image to edit."}),
+                "prompt": ("STRING", {"multiline": True, "default": "", "tooltip": "Edit instructions."}),
             },
             "optional": {
-                "model": (models, {
-                    "default": "gpt-5.2-instant",
-                    "tooltip": TOOLTIPS["model"]
-                }),
-                "description_style": (description_presets, {
-                    "default": description_presets[0] if description_presets else "image_describer",
-                    "tooltip": TOOLTIPS["description_style"]
-                }),
-                "custom_instruction": ("STRING", {
-                    "multiline": True,
-                    "default": "",
-                    "tooltip": "Custom description instruction (overrides style preset)."
-                }),
-                "preview": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": "Show browser window during generation."
-                }),
-            }
+                "max_images": ("INT", {"default": 1, "min": 1, "max": 2, "tooltip": "Number of images to generate."}),
+                "preview": ("BOOLEAN", {"default": False, "tooltip": "Show browser preview."}),
+            },
         }
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("description",)
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("images",)
     FUNCTION = "run"
 
-    async def run(self, image, model: str = "gpt-5.2-instant",
-                  description_style: str = "image_describer",
-                  custom_instruction: str = None, preview: bool = False):
+    async def run(self, image, prompt: str, max_images: int = 1, preview: bool = False):
         from comfy.utils import ProgressBar
 
-        # Get system prompt
-        if custom_instruction and custom_instruction.strip():
-            system_message = custom_instruction.strip()
-        else:
-            system_message = get_preset_prompt(description_style)
-            if not system_message:
-                system_message = "Describe this image in detail."
-
-        # Save image to temp file
-        pil_img = tensor_to_pil(image)
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-            pil_img.save(f.name)
-            image_path = f.name
-
-        try:
+        with temp_image(image) as image_path:
+            if not image_path:
+                return (empty_image_tensor(),)
             pbar = ProgressBar(100)
-            response_text, _ = await chat_with_gpt(
-                "Describe this image.",  # Simple prompt, system message does the work
-                model, image_path,
-                system_message=system_message, pbar=pbar, preview=preview
+            images = await imagine_edit(
+                prompt, image_path=image_path, max_images=max_images, pbar=pbar, preview=preview
             )
+            return (bytes_list_to_tensor(images),)
 
-            return (response_text,)
-        finally:
-            if image_path and os.path.exists(image_path):
-                os.unlink(image_path)
+
+class GrokTextToVideoNode:
+    """Text-to-video generation with Grok Imagine."""
+
+    DISPLAY_NAME = "Grok Text to Video"
+    CATEGORY = "Specter/video/Grok"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "prompt": ("STRING", {"multiline": True, "default": "", "tooltip": "Video description."}),
+            },
+            "optional": {
+                "size": (GROK_SIZES, {"default": GROK_SIZES[0], "tooltip": "Video size/aspect ratio."}),
+                "mode": (GROK_MODES, {"default": "custom", "tooltip": "Content mode: normal, custom, fun, spicy."}),
+                "preview": ("BOOLEAN", {"default": False, "tooltip": "Show browser preview."}),
+            },
+        }
+
+    RETURN_TYPES = ("VIDEO",)
+    RETURN_NAMES = ("video",)
+    FUNCTION = "run"
+
+    async def run(
+        self,
+        prompt: str,
+        size: str = "1:1 Square (960x960)",
+        mode: str = "custom",
+        preview: bool = False,
+    ):
+        from io import BytesIO
+
+        from comfy.utils import ProgressBar
+        from comfy_api.input_impl import VideoFromFile
+
+        pbar = ProgressBar(100)
+        video_bytes = await imagine_t2v(prompt, size=size, mode=mode, pbar=pbar, preview=preview)
+        if not video_bytes:
+            raise RuntimeError("Video generation failed - no video captured")
+        return (VideoFromFile(BytesIO(video_bytes)),)
+
+
+class GrokImageToVideoNode:
+    """Image-to-video generation with Grok Imagine."""
+
+    DISPLAY_NAME = "Grok Image to Video"
+    CATEGORY = "Specter/video/Grok"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image": ("IMAGE", {"tooltip": "Source image for video."}),
+            },
+            "optional": {
+                "prompt": ("STRING", {"multiline": True, "default": "", "tooltip": "Motion/action description."}),
+                "mode": (GROK_MODES, {"default": "custom", "tooltip": "Content mode: normal, custom, fun, spicy."}),
+                "preview": ("BOOLEAN", {"default": False, "tooltip": "Show browser preview."}),
+            },
+        }
+
+    RETURN_TYPES = ("VIDEO",)
+    RETURN_NAMES = ("video",)
+    FUNCTION = "run"
+
+    async def run(self, image, prompt: str = "", mode: str = "custom", preview: bool = False):
+        from io import BytesIO
+
+        from comfy.utils import ProgressBar
+        from comfy_api.input_impl import VideoFromFile
+
+        with temp_image(image) as image_path:
+            if not image_path:
+                raise RuntimeError("Image required for image-to-video")
+            pbar = ProgressBar(100)
+            video_bytes = await imagine_i2v(image_path, prompt=prompt, mode=mode, pbar=pbar, preview=preview)
+            if not video_bytes:
+                raise RuntimeError("Video generation failed - no video captured")
+            return (VideoFromFile(BytesIO(video_bytes)),)
+
+
+# =============================================================================
+# UTILITY NODES
+# =============================================================================
+
+
+_TEXT_ONLY_SYSTEM_SUFFIX = " Output ONLY text. Do NOT generate images."
+_TEXT_ONLY_PROMPT_SUFFIX = "\n\n[Reply with text only. Do not generate images.]"
+
+
+def _create_prompt_enhancer(provider: str, display_prefix: str, chat_fn, default_model: str):
+    """Factory for prompt enhancer nodes."""
+
+    class _PromptEnhancerNode:
+        DISPLAY_NAME = f"{display_prefix} Prompt Enhancer"
+        CATEGORY = "Specter/tools"
+
+        @classmethod
+        def INPUT_TYPES(cls):
+            models = get_models(provider) or [default_model]
+            presets = ["custom"] + (get_presets_by_category("prompt_enhancement") or ["prompt_enhancer"])
+            return {
+                "required": {
+                    "input_prompt": ("STRING", {"multiline": True, "default": "", "tooltip": TOOLTIPS["input_prompt"]}),
+                },
+                "optional": {
+                    "model": (models, {"default": models[0], "tooltip": TOOLTIPS["model"]}),
+                    "style": (presets, {"default": presets[1], "tooltip": TOOLTIPS["enhancement_style"]}),
+                    "additional_instructions": (
+                        "STRING",
+                        {
+                            "multiline": True,
+                            "default": "",
+                            "tooltip": "Additional instructions, or full prompt if style is 'custom'.",
+                        },
+                    ),
+                    "preview": ("BOOLEAN", {"default": False, "tooltip": TOOLTIPS["preview"]}),
+                },
+            }
+
+        RETURN_TYPES = ("STRING",)
+        RETURN_NAMES = ("enhanced_prompt",)
+        FUNCTION = "run"
+
+        async def run(
+            self,
+            input_prompt: str,
+            model: str | None = None,
+            style: str = "prompt_enhancer",
+            additional_instructions: str | None = None,
+            preview: bool = False,
+        ):
+            from comfy.utils import ProgressBar
+
+            model = model or default_model
+            extra = additional_instructions.strip() if additional_instructions else ""
+            if style == "custom":
+                system = (extra or "Enhance this prompt for image generation.") + _TEXT_ONLY_SYSTEM_SUFFIX
+            else:
+                base = get_preset_prompt(style) or "Enhance this prompt for image generation."
+                system = f"{base} {extra}".strip() + _TEXT_ONLY_SYSTEM_SUFFIX
+            prompt = input_prompt + _TEXT_ONLY_PROMPT_SUFFIX
+
+            pbar = ProgressBar(100)
+            response, _ = await chat_fn(prompt, model, None, system_message=system, pbar=pbar, preview=preview)
+            return (response,)
+
+    return _PromptEnhancerNode
+
+
+def _create_image_describer(provider: str, display_prefix: str, chat_fn, default_model: str):
+    """Factory for image describer nodes."""
+
+    class _ImageDescriberNode:
+        DISPLAY_NAME = f"{display_prefix} Image Describer"
+        CATEGORY = "Specter/tools"
+
+        @classmethod
+        def INPUT_TYPES(cls):
+            models = get_models(provider) or [default_model]
+            presets = ["custom"] + (get_presets_by_category("image_description") or ["image_describer"])
+            return {
+                "required": {
+                    "image": ("IMAGE", {"tooltip": "Image to describe."}),
+                },
+                "optional": {
+                    "model": (models, {"default": models[0], "tooltip": TOOLTIPS["model"]}),
+                    "style": (presets, {"default": presets[1], "tooltip": TOOLTIPS["description_style"]}),
+                    "additional_instructions": (
+                        "STRING",
+                        {
+                            "multiline": True,
+                            "default": "",
+                            "tooltip": "Additional instructions, or full prompt if style is 'custom'.",
+                        },
+                    ),
+                    "preview": ("BOOLEAN", {"default": False, "tooltip": TOOLTIPS["preview"]}),
+                },
+            }
+
+        RETURN_TYPES = ("STRING",)
+        RETURN_NAMES = ("description",)
+        FUNCTION = "run"
+
+        async def run(
+            self,
+            image,
+            model: str | None = None,
+            style: str = "image_describer",
+            additional_instructions: str | None = None,
+            preview: bool = False,
+        ):
+            from comfy.utils import ProgressBar
+
+            model = model or default_model
+            extra = additional_instructions.strip() if additional_instructions else ""
+            if style == "custom":
+                system = (extra or "Describe this image in detail.") + _TEXT_ONLY_SYSTEM_SUFFIX
+            else:
+                base = get_preset_prompt(style) or "Describe this image in detail."
+                system = f"{base} {extra}".strip() + _TEXT_ONLY_SYSTEM_SUFFIX
+            prompt = "Describe this image." + _TEXT_ONLY_PROMPT_SUFFIX
+
+            with temp_image(image) as image_path:
+                pbar = ProgressBar(100)
+                response, _ = await chat_fn(
+                    prompt, model, image_path, system_message=system, pbar=pbar, preview=preview
+                )
+                return (response,)
+
+    return _ImageDescriberNode
+
+
+# Generate utility nodes for both providers
+PromptEnhancerNode = _create_prompt_enhancer("chatgpt", "ChatGPT", chat_with_gpt, "gpt-5.1-instant")
+GrokPromptEnhancerNode = _create_prompt_enhancer("grok", "Grok", chat_with_grok, "grok-3")
+ImageDescriberNode = _create_image_describer("chatgpt", "ChatGPT", chat_with_gpt, "gpt-5.1-instant")
+GrokImageDescriberNode = _create_image_describer("grok", "Grok", chat_with_grok, "grok-3")
 
 
 # =============================================================================
 # NODE REGISTRATION
 # =============================================================================
 
-NODE_CLASS_MAPPINGS = {
-    "Specter_ChatGPT_Text": ChatGPTTextNode,
-    "Specter_ChatGPT_Image": ChatGPTImageNode,
-    "Specter_PromptEnhancer": PromptEnhancerNode,
-    "Specter_ImageDescriber": ImageDescriberNode,
-}
 
-NODE_DISPLAY_NAME_MAPPINGS = {
-    "Specter_ChatGPT_Text": "ChatGPT Text",
-    "Specter_ChatGPT_Image": "ChatGPT Image",
-    "Specter_PromptEnhancer": "Prompt Enhancer",
-    "Specter_ImageDescriber": "Image Describer",
-}
+def _register_nodes() -> tuple[dict, dict]:
+    """Auto-register all *Node classes with DISPLAY_NAME, CATEGORY, and FUNCTION."""
+    import sys
+
+    module = sys.modules[__name__]
+    class_mappings = {}
+    display_mappings = {}
+
+    for name in dir(module):
+        if not name.endswith("Node"):
+            continue
+        cls = getattr(module, name)
+        if not (hasattr(cls, "DISPLAY_NAME") and hasattr(cls, "CATEGORY") and hasattr(cls, "FUNCTION")):
+            continue
+
+        key = f"Specter_{name.removesuffix('Node')}"
+        class_mappings[key] = cls
+        display_mappings[key] = cls.DISPLAY_NAME
+
+    return class_mappings, display_mappings
+
+
+NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS = _register_nodes()

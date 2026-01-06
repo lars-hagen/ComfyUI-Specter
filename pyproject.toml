@@ -1,0 +1,70 @@
+[project]
+name = "comfyui-specter"
+version = "0.1.0"
+description = "Browser automation for AI chat providers as ComfyUI nodes"
+requires-python = ">=3.10"
+dependencies = [
+    "playwright",
+    "pillow",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff",
+    "pyright",
+]
+
+[project.scripts]
+specter = "specter.cli.main:main"
+
+[tool.pyright]
+pythonVersion = "3.10"
+typeCheckingMode = "basic"
+exclude = ["user_data", "debug_dumps", ".venv"]
+# Use ComfyUI's venv for installed packages
+venvPath = "../.."
+venv = ".venv"
+# Add ComfyUI root for local modules (comfy, server, etc.)
+extraPaths = ["../.."]
+reportMissingTypeStubs = false
+# Playwright TypedDict strict checks not useful here
+reportTypedDictNotRequiredAccess = false
+reportArgumentType = "warning"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+exclude = [
+    "user_data",
+    "debug_dumps",
+    ".git",
+    "__pycache__",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "UP",     # pyupgrade
+    "RUF",    # ruff-specific
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "E722",   # bare except (intentional for browser automation catch-all)
+    "B008",   # function call in default argument (common in ComfyUI)
+    "RUF005", # list concatenation vs spread (preference)
+    "RUF006", # fire-and-forget asyncio.create_task (intentional)
+    "RUF012", # mutable class attrs (common in ComfyUI nodes)
+    "RUF013", # implicit Optional (= None is fine, no need for | None)
+    "RUF022", # unsorted __all__ (we group by category intentionally)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["specter"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

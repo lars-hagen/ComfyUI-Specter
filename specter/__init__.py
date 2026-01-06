@@ -1,17 +1,6 @@
 """Specter - Browser automation for AI web interfaces."""
 
-from .chatgpt import ChatGPTNode
-from .nodes import (
-    ChatGPTTextNode,
-    ChatGPTImageNode,
-    PromptEnhancerNode,
-    ImageDescriberNode,
-)
+from . import routes
+from .nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
 
-__all__ = [
-    "ChatGPTNode",
-    "ChatGPTTextNode",
-    "ChatGPTImageNode",
-    "PromptEnhancerNode",
-    "ImageDescriberNode",
-]
+__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "routes"]

@@ -1,5 +1,23 @@
-# Sessions
-*_session.json
+# User data (sessions, browser profiles)
+user_data/
+.claude/CLAUDE.md
+# Debug artifacts
+debug_dumps/
+*_diagnostic.json
+*_comparison.json
+*_cookies.json
+*_localstorage.json
+*_state_dump.json
+*_incognito.json
+settings.json
+grok_profile/
+onboard_*/
+onboard
+
+# Test outputs
+test_*.png
+test_*.mp4
+image.png
 
 # Python
 __pycache__/

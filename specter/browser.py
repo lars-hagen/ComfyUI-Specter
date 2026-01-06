@@ -2,39 +2,44 @@
 
 import asyncio
 import json
-from camoufox.async_api import AsyncCamoufox
 
-BROWSER_CHROME_HEIGHT = 61  # Toolbar height to compensate for
+from .core.browser import launch_browser
 
 
 class BrowserStream:
     """Streams browser screenshots and handles user input with login detection."""
 
     def __init__(self):
-        self.browser = None
+        self._playwright = None
+        self._context = None
         self.page = None
         self.clients = set()
         self.streaming = False
         self._stream_task = None
         self._login_config = None
+        self.current_service = None
+        self._did_post_login_redirect = False
 
-    async def start(self, url: str, width: int = 600, height: int = 800, login_config: dict = None):
+    async def start(self, url: str, width: int = 600, height: int = 800, login_config: dict | None = None):
         """Launch browser and navigate to URL."""
-        if self.browser:
+        if self._context:
             await self.stop()
 
         self._login_config = login_config
-        self.browser = await AsyncCamoufox(
-            headless=True,
-            window=(width, height + BROWSER_CHROME_HEIGHT),
-        ).__aenter__()
-        self.page = await self.browser.new_page()
-        await self.page.set_viewport_size({"width": width, "height": height})
+        self.current_service = login_config.get("service") if login_config else None
+        self._did_post_login_redirect = False
 
-        # Skip cookie banner
-        await self.page.context.add_cookies([
-            {"name": "oai-allow-ne", "value": "true", "domain": ".chatgpt.com", "path": "/"},
-        ])
+        # Use launch_browser for persistent profiles and session handling
+        self._playwright, self._context, self.page, _ = await launch_browser(
+            service=self.current_service or "default",
+            viewport={"width": width, "height": height},
+            headless=True,
+        )
+
+        # Apply service-specific init scripts from config
+        if login_config and login_config.get("init_scripts"):
+            for script in login_config["init_scripts"]:
+                await self.page.add_init_script(script)
 
         await self.page.goto(url)
         self.streaming = True
@@ -50,10 +55,20 @@ class BrowserStream:
             except asyncio.CancelledError:
                 pass
 
-        if self.browser:
-            await self.browser.__aexit__(None, None, None)
-            self.browser = None
+        if self._context:
+            try:
+                await self._context.close()
+            except:
+                pass
+            self._context = None
             self.page = None
+
+        if self._playwright:
+            try:
+                await self._playwright.stop()
+            except:
+                pass
+            self._playwright = None
 
     async def _stream_loop(self):
         """Capture and broadcast screenshots, detect login."""
@@ -72,10 +87,16 @@ class BrowserStream:
     async def _check_logged_in(self) -> bool:
         """Check if user has successfully logged in."""
         cfg = self._login_config
+        if not cfg or not self.page:
+            return False
+        # Skip login detection if explicitly disabled
+        if cfg.get("detect_login") is False:
+            return False
         url = self.page.url
 
         # Check URL conditions
-        if cfg.get("success_url_contains") not in url:
+        success_pattern = cfg.get("success_url_contains", "")
+        if success_pattern and success_pattern not in url:
             return False
         if cfg.get("success_url_excludes") and cfg["success_url_excludes"] in url:
             return False
@@ -93,6 +114,18 @@ class BrowserStream:
                 pass
             if await self.page.locator(cfg["workspace_selector"]).count() > 0:
                 return False
+
+        # Navigate to post_login_url if specified (e.g., grok.com after X login)
+        # Only do this once per session
+        post_login_url = cfg.get("post_login_url")
+        if post_login_url and not self._did_post_login_redirect:
+            self._did_post_login_redirect = True
+            try:
+                await self.page.goto(post_login_url, timeout=30000)
+                # Wait for JS to initialize and populate localStorage
+                await asyncio.sleep(5)
+            except Exception:
+                pass
 
         return True
 
@@ -126,11 +159,11 @@ class BrowserStream:
         x, y = event.get("x"), event.get("y")
         try:
             if t == "mousedown":
-                if x is not None:
+                if x is not None and y is not None:
                     await self.page.mouse.move(x, y)
                 await self.page.mouse.down()
             elif t == "mouseup":
-                if x is not None:
+                if x is not None and y is not None:
                     await self.page.mouse.move(x, y)
                 await self.page.mouse.up()
             elif t == "type":

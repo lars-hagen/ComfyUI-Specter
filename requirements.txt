@@ -1,1 +1,2 @@
-camoufox[geoip]
+playwright
+pillow
