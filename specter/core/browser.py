@@ -193,8 +193,9 @@ STEALTH_SCRIPT = """
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
 """
 
-SPECTER_DIR = os.path.dirname(os.path.dirname(__file__))
-USER_DATA_DIR = os.path.join(SPECTER_DIR, "user_data")
+# Project root is 3 levels up from specter/core/browser.py
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+USER_DATA_DIR = os.path.join(PROJECT_ROOT, "user_data")
 PROFILES_DIR = os.path.join(USER_DATA_DIR, "profiles")
 os.makedirs(PROFILES_DIR, exist_ok=True)
 

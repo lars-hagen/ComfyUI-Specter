@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 # Debug dumps directory
+# specter/ directory (parent of core/)
 SPECTER_DIR = Path(__file__).parent.parent
 DEBUG_DIR = SPECTER_DIR / "debug_dumps"
 
