@@ -41,6 +41,7 @@ class ChatGPTTextNode:
             "optional": {
                 "system_message": ("STRING", {"multiline": True, "default": "", "tooltip": TOOLTIPS["system_message"]}),
                 "image": ("IMAGE", {"tooltip": TOOLTIPS["image"]}),
+                "preview": ("BOOLEAN", {"default": False, "tooltip": "Show browser preview."}),
             },
         }
 
@@ -48,7 +49,7 @@ class ChatGPTTextNode:
     RETURN_NAMES = ("response",)
     FUNCTION = "run"
 
-    async def run(self, prompt: str, model: str, system_message: str | None = None, image=None):
+    async def run(self, prompt: str, model: str, system_message: str | None = None, image=None, preview: bool = False):
         from comfy.utils import ProgressBar
 
         with temp_image(image) as image_path:
@@ -59,6 +60,7 @@ class ChatGPTTextNode:
                 image_path,
                 system_message=system_message if system_message and system_message.strip() else None,
                 pbar=pbar,
+                preview=preview,
             )
             return (text,)
 
@@ -81,6 +83,7 @@ class ChatGPTImageNode:
                 "model": (image_models, {"default": image_models[0], "tooltip": "Image model."}),
                 "image": ("IMAGE", {"tooltip": "Reference image for editing."}),
                 "size": (sizes, {"default": sizes[0], "tooltip": TOOLTIPS["size"]}),
+                "preview": ("BOOLEAN", {"default": False, "tooltip": "Show browser preview."}),
             },
         }
 
@@ -88,7 +91,7 @@ class ChatGPTImageNode:
     RETURN_NAMES = ("image",)
     FUNCTION = "run"
 
-    async def run(self, prompt: str, model: str = "gpt-image-1.5", image=None, size: str = "Auto"):
+    async def run(self, prompt: str, model: str = "gpt-image-1.5", image=None, size: str = "Auto", preview: bool = False):
         from comfy.utils import ProgressBar
 
         config = get_image_model("chatgpt", model)
@@ -102,7 +105,7 @@ class ChatGPTImageNode:
 
         with temp_image(image) as image_path:
             pbar = ProgressBar(100)
-            _, image_bytes = await chat_with_gpt(final_prompt, proxy_model, image_path, pbar=pbar, _expect_image=True)
+            _, image_bytes = await chat_with_gpt(final_prompt, proxy_model, image_path, pbar=pbar, preview=preview, _expect_image=True)
             return (bytes_to_tensor(image_bytes) if image_bytes else empty_image_tensor(),)
 
 

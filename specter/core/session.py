@@ -50,6 +50,12 @@ async def handle_login_flow(page, service: str, login_event: str, login_selector
     """Handle login flow with popup and polling.
 
     Opens login popup, waits for user to log in, then injects session.
+
+    Args:
+        page: Playwright page (can be None if browser was closed to release profile lock)
+        service: Service name (e.g., "chatgpt", "grok")
+        login_event: Event name to send to frontend
+        login_selectors: Selectors to check for login buttons
     """
     from server import PromptServer
 

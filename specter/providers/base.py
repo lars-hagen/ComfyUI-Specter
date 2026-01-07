@@ -199,11 +199,21 @@ class ChatService(ABC):
 
     async def _handle_login(self):
         """Handle login flow with popup and polling."""
+        # CRITICAL: Close browser first to release profile lock
+        # The login popup needs exclusive access to the same profile
+        await close_browser(self.playwright, self.context)
+        self.playwright = None
+        self.context = None
+        self.page = None
+
         new_session = await handle_login_flow(
-            self.page, self.config.service_name, self.config.login_event, self.config.login_selectors
+            None, self.config.service_name, self.config.login_event, self.config.login_selectors
         )
 
-        # Inject cookies first
+        # Relaunch browser with new session
+        await self._launch_browser()
+
+        # Inject cookies from login
         if "cookies" in new_session:
             await self.page.context.add_cookies(new_session["cookies"])
 
