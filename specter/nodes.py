@@ -32,7 +32,7 @@ class ChatGPTTextNode:
 
     @classmethod
     def INPUT_TYPES(cls):
-        models = get_models("chatgpt") or ["gpt-5.1-instant"]
+        models = get_models("chatgpt") or ["gpt-5-2-instant"]
         return {
             "required": {
                 "prompt": ("STRING", {"multiline": True, "default": "", "tooltip": TOOLTIPS["prompt"]}),
@@ -95,7 +95,7 @@ class ChatGPTImageNode:
         from comfy.utils import ProgressBar
 
         config = get_image_model("chatgpt", model)
-        proxy_model = config.get("proxy_model", "gpt-5.1-instant")
+        proxy_model = config.get("proxy_model", "gpt-5-2-instant")
         prefix = config.get("edit_prefix" if image is not None else "prompt_prefix", "")
 
         final_prompt = f"{prefix} {prompt}" if prefix else prompt
@@ -442,9 +442,9 @@ def _create_image_describer(provider: str, display_prefix: str, chat_fn, default
 
 
 # Generate utility nodes for both providers
-PromptEnhancerNode = _create_prompt_enhancer("chatgpt", "ChatGPT", chat_with_gpt, "gpt-5.1-instant")
+PromptEnhancerNode = _create_prompt_enhancer("chatgpt", "ChatGPT", chat_with_gpt, "gpt-5-2-instant")
 GrokPromptEnhancerNode = _create_prompt_enhancer("grok", "Grok", chat_with_grok, "grok-3")
-ImageDescriberNode = _create_image_describer("chatgpt", "ChatGPT", chat_with_gpt, "gpt-5.1-instant")
+ImageDescriberNode = _create_image_describer("chatgpt", "ChatGPT", chat_with_gpt, "gpt-5-2-instant")
 GrokImageDescriberNode = _create_image_describer("grok", "Grok", chat_with_grok, "grok-3")
 
 

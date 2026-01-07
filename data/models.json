@@ -4,13 +4,16 @@
       "name": "ChatGPT",
       "url": "https://chatgpt.com",
       "models": [
-        {"id": "gpt-5.1-instant", "name": "GPT-5.1 Instant", "default": true},
-        {"id": "gpt-5.1-thinking", "name": "GPT-5.1 Thinking"},
+        {"id": "gpt-5-2-instant", "name": "GPT-5.2 Instant", "default": true},
+        {"id": "gpt-5-2-thinking", "name": "GPT-5.2 Thinking"},
+        {"id": "gpt-5-2", "name": "GPT-5.2"},
+        {"id": "gpt-5-1-instant", "name": "GPT-5.1 Instant"},
+        {"id": "gpt-5-1-thinking", "name": "GPT-5.1 Thinking"},
         {"id": "gpt-5-instant", "name": "GPT-5 Instant"},
         {"id": "gpt-5-thinking-mini", "name": "GPT-5 Thinking mini"},
         {"id": "gpt-5-thinking", "name": "GPT-5 Thinking"},
         {"id": "gpt-4o", "name": "GPT-4o"},
-        {"id": "gpt-4.1", "name": "GPT-4.1"},
+        {"id": "gpt-4-1", "name": "GPT-4.1"},
         {"id": "o3", "name": "o3"},
         {"id": "o4-mini", "name": "o4-mini"}
       ],
@@ -19,7 +22,7 @@
           "id": "gpt-image-1.5",
           "name": "GPT Image 1.5",
           "default": true,
-          "proxy_model": "gpt-5.2-instant",
+          "proxy_model": "gpt-5-2-instant",
           "prompt_prefix": "Use image_gen to create:",
           "edit_prefix": "Use image_gen to edit this image:"
         }
