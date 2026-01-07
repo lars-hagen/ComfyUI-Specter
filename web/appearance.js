@@ -18,6 +18,7 @@ function createLoginPopup(service, startEndpoint, title) {
         cursorX: null,
         cursorY: null,
         lastScreenshot: null,
+        loadingOverlay: null,
 
         createEl() {
             if (this.el) return;
@@ -41,11 +42,33 @@ function createLoginPopup(service, startEndpoint, title) {
             header.appendChild(closeBtn);
 
             this.canvas = document.createElement("canvas");
-            this.canvas.style.cssText = "cursor: pointer; display: block; border-radius: 4px;";
+            this.canvas.style.cssText = "cursor: pointer; display: block; border-radius: 4px; min-width: 600px; min-height: 800px;";
             this.canvas.tabIndex = 0;
             this.ctx = this.canvas.getContext("2d");
 
-            this.el.append(header, this.canvas);
+            // Loading overlay with CSS animation
+            this.loadingOverlay = document.createElement("div");
+            this.loadingOverlay.style.cssText = `
+                position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+                color: #888; font: 16px system-ui, sans-serif; display: none;
+            `;
+            this.loadingOverlay.innerHTML = `
+                Launching browser<span class="loading-dots"></span>
+                <style>
+                    .loading-dots::after {
+                        content: '';
+                        animation: loading-dots 1.5s steps(4, end) infinite;
+                    }
+                    @keyframes loading-dots {
+                        0%, 25% { content: ''; }
+                        26%, 50% { content: '.'; }
+                        51%, 75% { content: '..'; }
+                        76%, 100% { content: '...'; }
+                    }
+                </style>
+            `;
+
+            this.el.append(header, this.canvas, this.loadingOverlay);
             document.body.appendChild(this.el);
 
             // Draggable
@@ -134,10 +157,16 @@ function createLoginPopup(service, startEndpoint, title) {
             this.createEl();
             this.el.style.display = "block";
 
+            // Set canvas size for loading state (before first screenshot)
+            this.canvas.width = 600;
+            this.canvas.height = 800;
+            this.loadingOverlay.style.display = "block";
+
             try {
                 const resp = await fetch(startEndpoint, { method: "POST" });
                 const data = await resp.json();
                 if (data.status === "error") {
+                    this.loadingOverlay.style.display = "none";
                     this.showError(data.message);
                     return;
                 }
@@ -145,6 +174,7 @@ function createLoginPopup(service, startEndpoint, title) {
                 this.connectWS();
                 this.canvas.focus();
             } catch (e) {
+                this.loadingOverlay.style.display = "none";
                 this.showError("Failed to connect to server");
             }
         },
@@ -177,6 +207,10 @@ function createLoginPopup(service, startEndpoint, title) {
                     }
                     return;
                 }
+
+                // Hide loading overlay on first screenshot
+                this.loadingOverlay.style.display = "none";
+
                 const blob = new Blob([e.data], { type: "image/png" });
                 const img = new Image();
                 img.onload = () => {
@@ -197,6 +231,7 @@ function createLoginPopup(service, startEndpoint, title) {
 
         async stop() {
             this.active = false;
+            this.loadingOverlay.style.display = "none";
             if (this.ws) { this.ws.close(); this.ws = null; }
             if (this.el) this.el.style.display = "none";
             try { await fetch("/specter/browser/stop", { method: "POST" }); } catch {}

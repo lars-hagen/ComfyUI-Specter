@@ -74,13 +74,13 @@ async def _setup_imagine_page(page, size: str, video: bool, mode: str | None = N
     # Set up request gate BEFORE navigation to catch any auto-fired requests
     unblock = await _setup_request_gate(page, mode=mode if video else None)
 
-    await page.goto("https://grok.com/imagine", timeout=60000)
+    await page.goto("https://grok.com/imagine", timeout=60000, wait_until="commit")
 
     if not await is_logged_in(page, LOGIN_SELECTORS):
         login_session = await handle_login_flow(page, "grok", "specter-grok-login-required", LOGIN_SELECTORS)
         if "cookies" in login_session:
             await page.context.add_cookies(login_session["cookies"])
-        await page.goto("https://grok.com/imagine", timeout=60000)
+        await page.goto("https://grok.com/imagine", timeout=60000, wait_until="commit")
 
     await page.wait_for_selector('div[contenteditable="true"]', timeout=30000)
     return unblock
