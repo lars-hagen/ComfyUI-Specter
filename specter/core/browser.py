@@ -5,6 +5,7 @@ import os
 import subprocess
 from datetime import datetime
 from io import BytesIO
+from typing import Any
 
 from PIL import Image
 from playwright.async_api import async_playwright
@@ -14,6 +15,10 @@ from .session import load_session
 
 # Track if we've already checked/installed Firefox this session
 _firefox_installed = False
+
+# Cached browser health status
+_browser_ready: bool | None = None
+_browser_error: str | None = None
 
 
 def ensure_firefox_installed():
@@ -56,6 +61,38 @@ def log(msg, symbol="▸"):
     """Log with timestamp and symbol."""
     ts = datetime.now().strftime("%H:%M:%S")
     print(f"[Specter {ts}] {symbol} {msg}")
+
+
+def _run_browser_check() -> tuple[bool, str | None]:
+    """Actually run the browser check (runs in thread)."""
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as p:
+            browser = p.firefox.launch(headless=True)
+            browser.close()
+        return True, None
+    except Exception as e:
+        error_str = str(e)
+        if "install-deps" in error_str:
+            return False, "Missing system dependencies. Run: sudo playwright install-deps"
+        return False, error_str.split("\n")[0]
+
+
+def check_browser_health() -> tuple[bool, str | None]:
+    """Check if browser can launch. Caches result after first call."""
+    global _browser_ready, _browser_error
+    if _browser_ready is not None:
+        return _browser_ready, _browser_error
+
+    # Run in thread to avoid asyncio loop conflict
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        future = executor.submit(_run_browser_check)
+        _browser_ready, _browser_error = future.result(timeout=30)
+
+    return _browser_ready, _browser_error
 
 
 def is_image_complete(data: bytes) -> bool:
@@ -185,10 +222,17 @@ FIREFOX_PREFS: dict[str, str | float | bool | int] = {
     # Limit cache to 50MB to prevent profile bloat
     "browser.cache.disk.capacity": 51200,  # 50MB in KB
     "browser.cache.disk.smart_size.enabled": False,  # Disable auto-sizing
+    # Disable iframe security restrictions to allow clicking Cloudflare Turnstile
+    "security.fileuri.strict_origin_policy": False,
+    "privacy.file_unique_origin": False,
+    "dom.security.https_first": False,
+    # Disable COOP to allow iframe interaction
+    "browser.tabs.remote.useCrossOriginOpenerPolicy": False,
+    "browser.tabs.remote.useCrossOriginEmbedderPolicy": False,
 }
 DEFAULT_VIEWPORT = {"width": 767, "height": 1020}  # Below tablet breakpoint, ultrawide height minus taskbar
 
-# Stealth script to remove webdriver flag
+# Stealth script to remove webdriver flag (minimal to avoid triggering more challenges)
 STEALTH_SCRIPT = """
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
 """
@@ -239,7 +283,7 @@ async def create_browser(headless: bool = True, viewport: dict | None = None, pr
 
 
 async def launch_browser(
-    service: str, viewport: dict | None = None, headless: bool | None = None, inject_session: bool = False
+    service: str, viewport: dict | None = None, headless: bool | None = None, purpose: str | None = None
 ):
     """Launch Firefox with persistent profile and restore session.
 
@@ -248,9 +292,10 @@ async def launch_browser(
 
     Args:
         headless: Override headless mode. None = use settings.
-        inject_session: Manually inject cookies/localStorage from saved session.
-                       Defaults to False (rely on persistent profile).
-                       Can be overridden globally via SPECTER_INJECT_SESSION env var.
+        purpose: What the browser is for (e.g., "login", "settings", "node").
+
+    Session cookies are always injected from saved session to refresh
+    Cloudflare tokens and ensure reliable authentication.
     """
     profile_dir = os.path.join(PROFILES_DIR, f"firefox-{service}")
     cleanup_old_dumps()
@@ -258,7 +303,8 @@ async def launch_browser(
     headless = headless if headless is not None else not is_headed_mode()
     vp = viewport or DEFAULT_VIEWPORT
     headed_str = ", headed" if not headless else ""
-    log(f"Launching Firefox for {service.title()} ({vp['width']}x{vp['height']}{headed_str})...", "◈")
+    purpose_str = f" [{purpose}]" if purpose else ""
+    log(f"Launching Firefox for {service.title()}{purpose_str} ({vp['width']}x{vp['height']}{headed_str})...", "◈")
 
     session = load_session(service)
     log("Found saved session" if session else "No saved session", "○")
@@ -269,12 +315,10 @@ async def launch_browser(
         profile_dir=profile_dir,
     )
 
-    # Check if manual injection requested (via param or env var for quick testing)
-    inject = inject_session or os.getenv("SPECTER_INJECT_SESSION", "").lower() in ("1", "true", "yes")
-
-    # Inject saved cookies if requested
-    if inject and session and session.get("cookies"):
-        log("Restoring session cookies...", "○")
+    # Always inject saved cookies to refresh Cloudflare tokens
+    # Persistent profile + fresh cookies from session = best reliability
+    if session and session.get("cookies"):
+        log("Refreshing session cookies...", "○")
         await context.add_cookies(session["cookies"])
 
     # Start tracing for debug dumps (if enabled)
@@ -345,3 +389,83 @@ async def close_browser(playwright, context, browser=None):
             await playwright.stop()
         except:
             pass
+
+
+class BrowserSession:
+    """Manages browser lifecycle with automatic cleanup and debug dumps.
+
+    Use as async context manager for automatic resource management:
+
+        async with BrowserSession("grok", error_context="grok-imagine") as browser:
+            await browser.page.goto("https://grok.com")
+            # ... work with browser.page ...
+            # On any exception, debug info is dumped automatically
+
+    Or manually for more control:
+
+        browser = BrowserSession("grok")
+        await browser.start()
+        try:
+            # ... work ...
+        except Exception as e:
+            await browser.dump_error(e)
+            raise
+        finally:
+            await browser.close()
+    """
+
+    def __init__(
+        self,
+        service: str,
+        viewport: dict | None = None,
+        error_context: str | None = None,
+        headless: bool | None = None,
+        purpose: str = "node",
+    ):
+        self.service = service
+        self.viewport = viewport
+        self.error_context = error_context or service
+        self.headless = headless
+        self.purpose = purpose
+
+        self._lock = get_service_lock(service)
+        self.playwright: Any = None
+        self.context: Any = None
+        self.page: Any = None
+        self.session: dict | None = None
+
+    async def start(self) -> "BrowserSession":
+        """Start browser session. Acquires service lock."""
+        await self._lock.acquire()
+        try:
+            self.playwright, self.context, self.page, self.session = await launch_browser(
+                self.service, viewport=self.viewport, headless=self.headless, purpose=self.purpose
+            )
+        except Exception:
+            self._lock.release()
+            raise
+        return self
+
+    async def dump_error(self, error: Exception):
+        """Dump debug info for an error."""
+        if self.page:
+            await handle_browser_error(self.page, error, self.error_context)
+
+    async def close(self):
+        """Close browser and release lock."""
+        if self.playwright:
+            await close_browser(self.playwright, self.context)
+            self.playwright = None
+            self.context = None
+            self.page = None
+        if self._lock.locked():
+            self._lock.release()
+
+    async def __aenter__(self) -> "BrowserSession":
+        return await self.start()
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if exc_val:
+            await self.dump_error(exc_val)
+        await self.close()
+        return False  # Don't suppress exceptions

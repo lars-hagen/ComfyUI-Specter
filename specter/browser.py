@@ -3,7 +3,7 @@
 import asyncio
 import json
 
-from .core.browser import launch_browser
+from .core.browser import launch_browser, log
 
 
 class BrowserStream:
@@ -20,7 +20,9 @@ class BrowserStream:
         self.current_service = None
         self._did_post_login_redirect = False
 
-    async def start(self, url: str, width: int = 600, height: int = 800, login_config: dict | None = None):
+    async def start(
+        self, url: str, width: int = 600, height: int = 800, login_config: dict | None = None, purpose: str = "login"
+    ):
         """Launch browser and navigate to URL."""
         if self._context:
             await self.stop()
@@ -34,6 +36,7 @@ class BrowserStream:
             service=self.current_service or "default",
             viewport={"width": width, "height": height},
             headless=True,
+            purpose=purpose,
         )
 
         # Apply service-specific init scripts from config
@@ -41,12 +44,22 @@ class BrowserStream:
             for script in login_config["init_scripts"]:
                 await self.page.add_init_script(script)
 
-        await self.page.goto(url)
+        # Start streaming BEFORE navigation so you can see loading/challenges
+        log("Browser ready, streaming screenshots to UI...", "▸")
         self.streaming = True
         self._stream_task = asyncio.create_task(self._stream_loop())
 
+        try:
+            # Use longer timeout and wait for any state (allows Cloudflare challenges to load)
+            await self.page.goto(url, timeout=60000, wait_until="commit")
+        except Exception as e:
+            # If navigation times out but page loaded something, continue anyway
+            log(f"Navigation warning: {str(e)[:100]}", "⚠")
+            log("Continuing with current page state...", "○")
+
     async def stop(self):
         """Close browser and stop streaming."""
+        log(f"Stopping browser stream for {self.current_service or 'unknown'}...", "○")
         self.streaming = False
         if self._stream_task:
             self._stream_task.cancel()
@@ -54,34 +67,93 @@ class BrowserStream:
                 await self._stream_task
             except asyncio.CancelledError:
                 pass
+            self._stream_task = None
 
         if self._context:
             try:
                 await self._context.close()
-            except:
-                pass
+            except Exception as e:
+                log(f"Warning closing context: {e}", "⚠")
             self._context = None
             self.page = None
 
         if self._playwright:
             try:
                 await self._playwright.stop()
-            except:
-                pass
+            except Exception as e:
+                log(f"Warning stopping playwright: {e}", "⚠")
             self._playwright = None
+
+        log("Browser stream stopped", "✓")
 
     async def _stream_loop(self):
         """Capture and broadcast screenshots, detect login."""
+        screenshot_errors = 0
+        max_screenshot_errors = 10  # More tolerance for screenshot failures
+        last_url = None
+
         while self.streaming and self.page:
             try:
-                # Check for login success
-                if self._login_config and await self._check_logged_in():
-                    await self._broadcast_json({"type": "logged_in"})
+                # Log URL changes for debugging
+                current_url = self.page.url
+                if current_url != last_url:
+                    log(f"Page: {current_url}", "→")
+                    last_url = current_url
 
-                screenshot = await self.page.screenshot(type="png")
-                await self._broadcast_bytes(screenshot)
+                # ALWAYS check for login - even if screenshots are failing
+                # This is critical - screenshot failures shouldn't block login detection
+                if self._login_config:
+                    try:
+                        if await self._check_logged_in():
+                            log("✓ Login detected! Closing browser to save session...", "★")
+                            await self._broadcast_json({"type": "logged_in"})
+                    except Exception as e:
+                        log(f"Login check error: {e}", "⚠")
+
+                # Try to capture screenshot (but don't let failures stop login checking)
+                try:
+                    screenshot = await self.page.screenshot(type="png", timeout=5000)
+                    await self._broadcast_bytes(screenshot)
+                    screenshot_errors = 0  # Reset error counter on success
+                except Exception as e:
+                    screenshot_errors += 1
+
+                    # Log first error with detail
+                    if screenshot_errors == 1:
+                        log(f"Screenshot error: {str(e).split('Call log')[0].strip()}", "⚠")
+
+                    # After many failures, stop trying screenshots but KEEP checking login
+                    if screenshot_errors >= max_screenshot_errors:
+                        log(
+                            f"Stopping screenshots after {max_screenshot_errors} failures, but still checking for login...",
+                            "○",
+                        )
+                        # Keep loop running but skip screenshot attempts
+                        while self.streaming and self.page:
+                            if self._login_config:
+                                try:
+                                    if await self._check_logged_in():
+                                        log("✓ Login detected (no screenshots)!", "★")
+                                        await self._broadcast_json({"type": "logged_in"})
+                                except:
+                                    pass
+                            await asyncio.sleep(1)
+                        break
+
+                    await asyncio.sleep(0.5)
+                    continue
+
                 await asyncio.sleep(0.1)
-            except Exception:
+            except Exception as e:
+                log(f"Stream loop error: {e}", "✕")
+                # Last attempt to check login before dying
+                if self._login_config:
+                    try:
+                        if await self._check_logged_in():
+                            log("✓ Login detected on error!", "★")
+                            await self._broadcast_json({"type": "logged_in"})
+                    except:
+                        pass
                 break
 
     async def _check_logged_in(self) -> bool:
@@ -120,12 +192,30 @@ class BrowserStream:
         post_login_url = cfg.get("post_login_url")
         if post_login_url and not self._did_post_login_redirect:
             self._did_post_login_redirect = True
+            log(f"Navigating to {post_login_url} to complete login...", "○")
             try:
                 await self.page.goto(post_login_url, timeout=30000)
-                # Wait for JS to initialize and populate localStorage
-                await asyncio.sleep(5)
+                await asyncio.sleep(1)  # Let page start loading
+
+                # Check if Cloudflare challenge is present and warn user
+                try:
+                    title = await self.page.title()
+                    if "just a moment" in title.lower():
+                        log("⚠ Cloudflare challenge detected - please click the checkbox if shown", "!")
+                        # Don't return True yet - wait for challenge to clear
+                        return False
+                except Exception:
+                    pass
             except Exception:
                 pass
+
+        # Check if still on Cloudflare challenge page
+        try:
+            title = await self.page.title()
+            if "just a moment" in title.lower():
+                return False  # Not logged in yet, still on challenge
+        except Exception:
+            pass
 
         return True
 
@@ -158,7 +248,51 @@ class BrowserStream:
         t = event.get("type")
         x, y = event.get("x"), event.get("y")
         try:
-            if t == "mousedown":
+            if t == "click":
+                # Atomic click with realistic delay - better for iframes like Cloudflare Turnstile
+                if x is not None and y is not None:
+                    # Detect Cloudflare Turnstile iframe and calculate offset
+                    turnstile_info = await self.page.evaluate("""
+                        () => {
+                            // Look for Turnstile iframe
+                            const selectors = [
+                                'iframe[src*="challenges.cloudflare.com"]',
+                                'iframe[src*="turnstile"]',
+                                'iframe[title*="Widget"]',
+                                'iframe[title*="cloudflare"]'
+                            ];
+
+                            for (const selector of selectors) {
+                                const iframe = document.querySelector(selector);
+                                if (iframe) {
+                                    const rect = iframe.getBoundingClientRect();
+                                    return {
+                                        found: true,
+                                        x: rect.x,
+                                        y: rect.y,
+                                        width: rect.width,
+                                        height: rect.height
+                                    };
+                                }
+                            }
+                            return { found: false };
+                        }
+                    """)
+
+                    if turnstile_info and turnstile_info.get("found"):
+                        # If clicking inside the iframe area, don't add offset
+                        # The user is clicking on the canvas which shows the page screenshot
+                        # So their click IS already page-relative
+                        log(
+                            f"Turnstile iframe at ({int(turnstile_info['x'])}, {int(turnstile_info['y'])}), size {int(turnstile_info['width'])}x{int(turnstile_info['height'])}",
+                            "◉",
+                        )
+                        log(f"Clicking at page coordinates ({int(x)}, {int(y)})", "◉")
+                    else:
+                        log(f"Click at ({int(x)}, {int(y)})", "◉")
+
+                    await self.page.mouse.click(x, y, delay=50)  # 50ms delay between mousedown/mouseup
+            elif t == "mousedown":
                 if x is not None and y is not None:
                     await self.page.mouse.move(x, y)
                 await self.page.mouse.down()
@@ -172,8 +306,8 @@ class BrowserStream:
                 await self.page.keyboard.press(event["key"])
             elif t == "scroll":
                 await self.page.mouse.wheel(event.get("dx", 0), event.get("dy", 0))
-        except Exception:
-            pass
+        except Exception as e:
+            log(f"Event handling error: {e}", "⚠")
 
     async def get_storage_state(self):
         """Get browser storage state for session persistence."""

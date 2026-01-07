@@ -19,6 +19,22 @@ from ..core.browser import (
 from ..core.session import handle_login_flow, is_logged_in
 
 
+def _clean_playwright_error(error: str) -> str:
+    """Clean verbose Playwright error messages for user display."""
+    if "install-deps" in error:
+        return "Missing system dependencies. Run: sudo playwright install-deps"
+    if "launch_persistent_context" in error or "BrowserType" in error:
+        # Extract just the key message from Playwright's verbose output
+        lines = error.split("\n")
+        for line in lines:
+            line = line.strip()
+            if line and not line.startswith("╔") and not line.startswith("║") and not line.startswith("╚"):
+                if "Host system" in line or "missing" in line.lower():
+                    return line
+        return "Browser failed to launch. Check system dependencies."
+    return error.split("\n")[0]
+
+
 @dataclass
 class ServiceConfig:
     """Configuration for a chat service."""
@@ -126,9 +142,10 @@ class ChatService(ABC):
             log("Interrupted by user", "✕")
             raise
         except Exception as e:
-            log(f"Error: {e}", "✕")
+            clean_msg = _clean_playwright_error(str(e))
+            log(f"Error: {clean_msg}", "✕")
             await handle_browser_error(self.page, e, self.config.service_name)
-            raise
+            raise Exception(clean_msg) from e
         finally:
             await self._cleanup()
             lock.release()

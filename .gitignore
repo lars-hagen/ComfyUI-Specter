@@ -17,7 +17,10 @@ onboard
 # Test outputs
 test_*.png
 test_*.mp4
-image.png
+test_*.html
+test_*.py
+TEST_*.md
+DISCORD_*.md
 
 # Python
 __pycache__/

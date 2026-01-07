@@ -4,7 +4,9 @@ import asyncio
 import json
 import os
 
-USER_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "user_data")
+# Project root is 3 levels up from specter/core/session.py (matches browser.py)
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+USER_DATA_DIR = os.path.join(PROJECT_ROOT, "user_data")
 SESSION_DIR = os.path.join(USER_DATA_DIR, "sessions")
 os.makedirs(SESSION_DIR, exist_ok=True)
 

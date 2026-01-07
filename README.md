@@ -17,7 +17,7 @@ https://github.com/user-attachments/assets/ffbe5846-24ae-4c7c-a393-4b504e196287
 ```mermaid
 flowchart LR
     A[ComfyUI Workflow] --> B[Specter Node]
-    B --> C[Camoufox Browser]
+    B --> C[Firefox Browser]
     C --> D[ChatGPT Web UI]
     D --> E[Generated Image]
     E --> A
@@ -46,7 +46,8 @@ flowchart LR
    ```bash
    cd ComfyUI-Specter
    pip install -r requirements.txt
-   python3 -m camoufox fetch
+   # Linux only: install browser system dependencies
+   sudo playwright install-deps firefox
    ```
 
 3. Restart ComfyUI
@@ -129,9 +130,10 @@ Usage depends on your existing ChatGPT subscription tier:
 
 ## Troubleshooting
 
+- **"Missing system dependencies"** - Run `sudo playwright install-deps` to install required libraries
 - **Session expired?** Go to Settings > Specter > Authentication and click Sign In
 - **Browser not closing?** Check for zombie Firefox processes
-- **Login loop?** Delete `chatgpt_session.json` and retry
+- **Login loop?** Delete session via Settings > Specter or remove `user_data/` folder
 
 ## Coming Soon
 

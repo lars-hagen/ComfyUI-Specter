@@ -15,6 +15,9 @@ function createLoginPopup(service, startEndpoint, title) {
         ws: null,
         active: false,
         onClose: null,
+        cursorX: null,
+        cursorY: null,
+        lastScreenshot: null,
 
         createEl() {
             if (this.el) return;
@@ -61,20 +64,50 @@ function createLoginPopup(service, startEndpoint, title) {
             });
             document.addEventListener("mouseup", () => dragging = false);
 
-            // Canvas events
+            // Canvas events - track mousedown position for click detection
+            let mouseDownPos = null;
             const getCoords = (e) => {
                 const rect = this.canvas.getBoundingClientRect();
+                // IMPORTANT: Round to integers for pixel-perfect consistency (fixes reCAPTCHA tile selection)
                 return {
-                    x: (e.clientX - rect.left) * (this.canvas.width / rect.width),
-                    y: (e.clientY - rect.top) * (this.canvas.height / rect.height)
+                    x: Math.round((e.clientX - rect.left) * (this.canvas.width / rect.width)),
+                    y: Math.round((e.clientY - rect.top) * (this.canvas.height / rect.height))
                 };
             };
             const send = (event) => {
                 if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(event));
             };
-            this.canvas.addEventListener("mousedown", (e) => { this.canvas.focus(); e.preventDefault(); send({ type: "mousedown", ...getCoords(e) }); });
-            this.canvas.addEventListener("mouseup", (e) => { e.preventDefault(); send({ type: "mouseup", ...getCoords(e) }); });
-            this.canvas.addEventListener("mousemove", (e) => { if (e.buttons === 1) send({ type: "mousemove", ...getCoords(e) }); });
+            this.canvas.addEventListener("mousedown", (e) => {
+                this.canvas.focus();
+                e.preventDefault();
+                const coords = getCoords(e);
+                mouseDownPos = coords;
+                send({ type: "mousedown", ...coords });
+            });
+            this.canvas.addEventListener("mouseup", (e) => {
+                e.preventDefault();
+                // CRITICAL FIX: Reuse mousedown coordinates if mouse barely moved
+                // This ensures reCAPTCHA sees identical mousedown/mouseup coords
+                const rawCoords = getCoords(e);
+                const coords = (mouseDownPos && Math.abs(rawCoords.x - mouseDownPos.x) <= 5 && Math.abs(rawCoords.y - mouseDownPos.y) <= 5)
+                    ? mouseDownPos  // Reuse exact mousedown coords
+                    : rawCoords;     // Use new coords if mouse moved significantly
+
+                console.log(`[Specter] Click at (${coords.x}, ${coords.y})`);
+                send({ type: "mouseup", ...coords });
+                // If mouseup is close to mousedown, also send atomic click (for iframes like Cloudflare)
+                if (mouseDownPos && Math.abs(coords.x - mouseDownPos.x) <= 5 && Math.abs(coords.y - mouseDownPos.y) <= 5) {
+                    send({ type: "click", ...coords });
+                }
+                mouseDownPos = null;
+            });
+            this.canvas.addEventListener("mousemove", (e) => {
+                const coords = getCoords(e);
+                this.cursorX = coords.x;
+                this.cursorY = coords.y;
+                this.redrawWithCursor();
+                if (e.buttons === 1) send({ type: "mousemove", ...coords });
+            });
             this.canvas.addEventListener("wheel", (e) => { this.canvas.focus(); e.preventDefault(); send({ type: "scroll", dx: e.deltaX, dy: e.deltaY }); }, { passive: false });
 
             const stopKey = (e) => { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation(); };
@@ -100,16 +133,35 @@ function createLoginPopup(service, startEndpoint, title) {
         async start() {
             this.createEl();
             this.el.style.display = "block";
-            this.active = true;
 
             try {
-                await fetch(startEndpoint, { method: "POST" });
+                const resp = await fetch(startEndpoint, { method: "POST" });
+                const data = await resp.json();
+                if (data.status === "error") {
+                    this.showError(data.message);
+                    return;
+                }
+                this.active = true;
                 this.connectWS();
                 this.canvas.focus();
             } catch (e) {
-                console.error(`[Specter] Failed to start ${service} browser:`, e);
-                this.el.style.display = "none";
+                this.showError("Failed to connect to server");
             }
+        },
+
+        showError(msg) {
+            // Parse clean error from verbose Playwright output
+            const clean = msg.includes("install-deps")
+                ? "Missing dependencies. Run: sudo playwright install-deps"
+                : msg.split("\n")[0];
+            // Show error in canvas
+            this.canvas.width = 450;
+            this.canvas.height = 80;
+            this.ctx.fillStyle = "#2a2a2a";
+            this.ctx.fillRect(0, 0, 450, 80);
+            this.ctx.fillStyle = "#f87171";
+            this.ctx.font = "14px system-ui, sans-serif";
+            this.ctx.fillText("⚠ " + clean, 16, 45);
         },
 
         connectWS() {
@@ -133,6 +185,8 @@ function createLoginPopup(service, startEndpoint, title) {
                         this.canvas.height = img.height;
                     }
                     this.ctx.drawImage(img, 0, 0);
+                    this.lastScreenshot = img;
+                    this.redrawWithCursor();
                     URL.revokeObjectURL(img.src);
                 };
                 img.src = URL.createObjectURL(blob);
@@ -147,6 +201,36 @@ function createLoginPopup(service, startEndpoint, title) {
             if (this.el) this.el.style.display = "none";
             try { await fetch("/specter/browser/stop", { method: "POST" }); } catch {}
             if (this.onClose) this.onClose();
+        },
+
+        redrawWithCursor() {
+            if (!this.lastScreenshot) return;
+
+            // Redraw screenshot
+            this.ctx.drawImage(this.lastScreenshot, 0, 0);
+
+            // Draw cursor if position is set
+            if (this.cursorX !== null && this.cursorY !== null) {
+                // Draw crosshair
+                this.ctx.strokeStyle = "#00ff00";
+                this.ctx.lineWidth = 2;
+                this.ctx.beginPath();
+                this.ctx.moveTo(this.cursorX - 10, this.cursorY);
+                this.ctx.lineTo(this.cursorX + 10, this.cursorY);
+                this.ctx.moveTo(this.cursorX, this.cursorY - 10);
+                this.ctx.lineTo(this.cursorX, this.cursorY + 10);
+                this.ctx.stroke();
+
+                // Draw circle
+                this.ctx.beginPath();
+                this.ctx.arc(this.cursorX, this.cursorY, 8, 0, 2 * Math.PI);
+                this.ctx.stroke();
+
+                // Draw coordinates
+                this.ctx.fillStyle = "#00ff00";
+                this.ctx.font = "12px monospace";
+                this.ctx.fillText(`(${Math.round(this.cursorX)}, ${Math.round(this.cursorY)})`, this.cursorX + 15, this.cursorY - 10);
+            }
         }
     };
     return popup;
@@ -211,6 +295,34 @@ app.registerExtension({
 
     // Settings for Specter
     settings: [
+        {
+            id: "Specter.BrowserStatus",
+            category: ["Specter", "Status"],
+            name: "Browser Status",
+            tooltip: "Shows if the browser automation is ready",
+            type: () => {
+                const el = document.createElement("span");
+                el.textContent = "Checking...";
+                el.style.fontWeight = "500";
+                fetch("/specter/health")
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.ready) {
+                            el.textContent = "✓ Ready";
+                            el.style.color = "#4ade80";
+                        } else {
+                            el.textContent = "⚠ " + (data.error || "Not ready");
+                            el.style.color = "#f87171";
+                        }
+                    })
+                    .catch(() => {
+                        el.textContent = "⚠ Unable to check";
+                        el.style.color = "#fbbf24";
+                    });
+                return el;
+            },
+            defaultValue: "",
+        },
         {
             id: "Specter.LoginButton",
             category: ["Specter", " Authentication", "ChatGPT"],
