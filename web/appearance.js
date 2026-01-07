@@ -42,7 +42,7 @@ function createLoginPopup(service, startEndpoint, title) {
             header.appendChild(closeBtn);
 
             this.canvas = document.createElement("canvas");
-            this.canvas.style.cssText = "cursor: pointer; display: block; border-radius: 4px; min-width: 600px; min-height: 800px;";
+            this.canvas.style.cssText = "cursor: pointer; display: block; border-radius: 4px;";
             this.canvas.tabIndex = 0;
             this.ctx = this.canvas.getContext("2d");
 
