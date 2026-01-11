@@ -34,7 +34,7 @@ async def imagine_t2i(
     _, expected_res = SIZES.get(size, ([1, 1], "960x960"))
 
     async with BrowserSession("grok", viewport=viewport, error_context="grok-imagine-t2i") as browser:
-        await _setup_imagine_page(browser.page, size, video=False)
+        await _setup_imagine_page(browser, size, video=False)
 
         log(f"Settings: {max_images} images, {expected_res}, viewport {viewport['width']}x{viewport['height']}", "○")
         log(f"Prompt: {prompt[:60]}..." if len(prompt) > 60 else f"Prompt: {prompt}", "✎")

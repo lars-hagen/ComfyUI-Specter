@@ -13,8 +13,10 @@ from ...core.browser import (
     ProgressTracker,
     log,
 )
-from ...core.session import is_logged_in
+from ...core.session import handle_login_flow
 from .chat import AGE_VERIFICATION_INIT_SCRIPT
+
+GROK_LOGIN_EVENT = "specter-grok-login-required"
 
 # Size presets: name -> (aspect_ratio, t2i_resolution)
 SIZES = {
@@ -25,11 +27,8 @@ SIZES = {
     "16:9 Widescreen (1280x720)": ([16, 9], "1280x720"),
 }
 
-LOGIN_SELECTORS = [
-    'button:has-text("Sign in")',
-    'button:has-text("Log in")',
-    'a[href*="/sign-in"]',
-]
+# Selector that only appears on the landing page (not logged in)
+LANDING_PAGE_SELECTOR = 'text="Introducing the fastest image and video generation experience"'
 
 VIDEO_MODES = {
     "normal": "normal",
@@ -65,11 +64,12 @@ async def _check_rate_limit(page):
 
 
 async def _setup_imagine_page(
-    page, size: str, video: bool, mode: str | None = None, block_video: bool = False
+    browser: BrowserSession, size: str, video: bool, mode: str | None = None, block_video: bool = False
 ) -> tuple | None:
     """Set up page for Grok Imagine.
 
     Args:
+        browser: BrowserSession instance (handles login flow if needed)
         block_video: If True, block videoGen until unblock() called
 
     Returns:
@@ -87,34 +87,61 @@ async def _setup_imagine_page(
         {AGE_VERIFICATION_INIT_SCRIPT}
     """
 
-    await page.add_init_script(init_script)
+    async def _navigate_and_setup():
+        """Navigate and set up page, returns gate_result."""
+        page = browser.page
+        await page.add_init_script(init_script)
 
-    gate_result = None
-    if block_video:
-        gate_result = await _setup_request_gate(page, mode=mode if video else None, block_video=block_video)
+        gate_result = None
+        if block_video:
+            gate_result = await _setup_request_gate(page, mode=mode if video else None, block_video=block_video)
 
-    await page.goto("https://grok.com/imagine", timeout=60000, wait_until="domcontentloaded")
+        await page.goto("https://grok.com/imagine", timeout=60000, wait_until="domcontentloaded")
 
-    # Hide text selection highlight (prevents visual artifacts in screenshots)
-    await page.evaluate("""() => {
-        const style = document.createElement('style');
-        style.textContent = '::selection { background: transparent !important; }';
-        document.head.appendChild(style);
-    }""")
+        # Hide text selection highlight (prevents visual artifacts in screenshots)
+        await page.evaluate("""() => {
+            const style = document.createElement('style');
+            style.textContent = '::selection { background: transparent !important; }';
+            document.head.appendChild(style);
+        }""")
 
-    if not await is_logged_in(page, LOGIN_SELECTORS):
-        raise RuntimeError(
-            "Not logged in to Grok. Please use the Grok node settings to log in first, "
-            "or the BrowserSession must be closed before handle_login_flow can open the popup."
+        return gate_result
+
+    gate_result = await _navigate_and_setup()
+    page = browser.page
+
+    # Wait for either editor (logged in) or landing page (not logged in)
+    editor_selector = ".tiptap.ProseMirror"
+    try:
+        await page.wait_for_selector(
+            f"{editor_selector}, {LANDING_PAGE_SELECTOR}",
+            timeout=30000,
         )
+    except Exception:
+        pass
 
-    # Wait for editor to be hydrated and ready for input
+    # Check if we're on the landing page (not logged in) - trigger login popup
+    if await page.locator(LANDING_PAGE_SELECTOR).count() > 0:
+        log("Not logged in - opening authentication popup...", "⚠")
+        await browser.close()
+        await handle_login_flow(None, "grok", GROK_LOGIN_EVENT, [])
+        await browser.start()
+        gate_result = await _navigate_and_setup()
+        page = browser.page
+
+        # Re-check after login
+        try:
+            await page.wait_for_selector(editor_selector, timeout=30000)
+        except Exception:
+            raise RuntimeError("Login failed. Please try again via ComfyUI Settings > Specter > Grok.") from None
+
+    # Wait for editor to be fully hydrated
     await page.wait_for_function(
         """() => {
             const editor = document.querySelector('.tiptap');
             return editor?.isContentEditable && editor.classList.contains('ProseMirror');
         }""",
-        timeout=30000,
+        timeout=10000,
     )
 
     return gate_result
@@ -332,7 +359,7 @@ async def imagine_edit(
     progress.update(10)
 
     async with BrowserSession("grok", error_context="grok-imagine-edit") as browser:
-        gate_result = await _setup_imagine_page(browser.page, "1:1 Square (960x960)", video=False, block_video=True)
+        gate_result = await _setup_imagine_page(browser, "1:1 Square (960x960)", video=False, block_video=True)
         assert gate_result is not None
         unblock, gate_state = gate_result
         _, _, image_state, upload_state = _setup_response_tracking(browser.page, mode="image", max_images=max_images)
@@ -407,7 +434,7 @@ async def imagine_t2v(
     progress.update(10)
 
     async with BrowserSession("grok", error_context="grok-imagine-t2v") as browser:
-        gate_result = await _setup_imagine_page(browser.page, size, video=True, mode=mode, block_video=True)
+        gate_result = await _setup_imagine_page(browser, size, video=True, mode=mode, block_video=True)
         assert gate_result is not None
         unblock, gate_state = gate_result
         captured, _, _, _ = _setup_response_tracking(browser.page, mode="video")
@@ -445,7 +472,7 @@ async def imagine_i2v(
 
     async with BrowserSession("grok", error_context="grok-imagine-i2v") as browser:
         gate_result = await _setup_imagine_page(
-            browser.page, "1:1 Square (960x960)", video=True, mode=mode, block_video=True
+            browser, "1:1 Square (960x960)", video=True, mode=mode, block_video=True
         )
         assert gate_result is not None
         unblock, gate_state = gate_result
