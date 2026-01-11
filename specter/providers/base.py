@@ -1,5 +1,3 @@
-"""Abstract base class for chat service providers."""
-
 import asyncio
 import time
 from abc import ABC, abstractmethod
@@ -14,31 +12,12 @@ from ..core.browser import (
     launch_browser,
     log,
     log_media_capture,
-    update_preview,
 )
 from ..core.session import handle_login_flow, is_logged_in
 
 
-def _clean_playwright_error(error: str) -> str:
-    """Clean verbose Playwright error messages for user display."""
-    if "install-deps" in error:
-        return "Missing system dependencies. Run: sudo playwright install-deps"
-    if "launch_persistent_context" in error or "BrowserType" in error:
-        # Extract just the key message from Playwright's verbose output
-        lines = error.split("\n")
-        for line in lines:
-            line = line.strip()
-            if line and not line.startswith("╔") and not line.startswith("║") and not line.startswith("╚"):
-                if "Host system" in line or "missing" in line.lower():
-                    return line
-        return "Browser failed to launch. Check system dependencies."
-    return error.split("\n")[0]
-
-
 @dataclass
 class ServiceConfig:
-    """Configuration for a chat service."""
-
     service_name: str
     base_url: str
     selectors: dict  # textarea, send_button, response
@@ -46,10 +25,10 @@ class ServiceConfig:
     login_event: str  # WebSocket event name for login popup
     image_url_patterns: list = field(default_factory=list)  # URL patterns for captured images
     image_min_size: int = 50000  # Minimum image size in bytes
-    completion_selectors: list = field(default_factory=list)  # Selectors indicating completion
     response_timeout: int = 90  # Seconds to wait for response
     init_scripts: list = field(default_factory=list)  # Scripts to inject before page load (localStorage setup)
     cookies: list = field(default_factory=list)  # Cookies to add before navigation
+    image_ready_selector: str | None = None  # Selector that must exist before accepting captured images
 
 
 class ChatService(ABC):
@@ -62,15 +41,17 @@ class ChatService(ABC):
     config: ServiceConfig
 
     def __init__(self):
-        self.page: Any = None  # Set in _launch_browser
+        self.page: Any = None
         self.context: Any = None
         self.playwright: Any = None
-        self.progress: Any = None  # Set in chat()
+        self.progress: Any = None
         self.captured_images: list[bytes] = []
         self.response_count = 0
         self.listening = False
-        self._session: dict | None = None
-        self.last_activity = 0.0
+        self.api_completion: dict | None = None
+        self.last_api_body: dict | None = None
+        self.api_error: dict | None = None
+        self.upload_complete: dict | None = None
 
     async def chat(
         self,
@@ -85,16 +66,54 @@ class ChatService(ABC):
         """Send message and return response text + captured image.
 
         This is the template method that orchestrates the chat flow.
+        Retries once if no results returned but no error occurred.
         """
-        self.progress = ProgressTracker(pbar, preview)
-        self.captured_images = []
-        self.response_count = 0
-        self.listening = False
+        max_retries = 2
+        last_result = ("", None)
+        for attempt in range(1, max_retries + 1):
+            try:
+                result = await self._chat_impl(prompt, model, image_path, system_message, pbar, preview, **kwargs)
+                last_result = result
+                # If we got something back, return it
+                if result[0] or result[1]:
+                    return result
+                # Got nothing but no error - retry if attempts remain
+                if attempt < max_retries:
+                    log(f"No results captured - retrying (attempt {attempt + 1}/{max_retries})", "⟳")
+                    await asyncio.sleep(1)
+                    continue
+            except (asyncio.CancelledError, KeyboardInterrupt):
+                raise
+            except Exception:
+                # Got an actual error - don't retry, just raise
+                raise
+        return last_result
 
+    async def _chat_impl(
+        self,
+        prompt: str,
+        model: str,
+        image_path: str | None = None,
+        system_message: str | None = None,
+        pbar=None,
+        preview: bool = False,
+        **kwargs,
+    ) -> tuple[str, bytes | None]:
+        """Internal chat implementation."""
         lock = get_service_lock(self.config.service_name)
         await lock.acquire()
 
         try:
+            # Initialize state AFTER acquiring lock to prevent race conditions
+            self.progress = ProgressTracker(pbar, preview)
+            self.captured_images = []
+            self.response_count = 0
+            self.listening = False
+            self.api_completion = None
+            self.last_api_body = None
+            self.api_error = None
+            self.upload_complete = None
+            self._expect_image = kwargs.get("_expect_image", False)
             self.progress.update(5)
             await self._launch_browser()
             self.progress.update(10)
@@ -142,25 +161,20 @@ class ChatService(ABC):
             log("Interrupted by user", "✕")
             raise
         except Exception as e:
-            clean_msg = _clean_playwright_error(str(e))
-            log(f"Error: {clean_msg}", "✕")
+            log(f"Error: {str(e).split(chr(10))[0]}", "✕")
             await handle_browser_error(self.page, e, self.config.service_name)
-            raise Exception(clean_msg) from e
+            raise
         finally:
             await self._cleanup()
             lock.release()
 
     async def _launch_browser(self):
-        """Launch browser with persistent profile."""
-        self.playwright, self.context, self.page, session = await launch_browser(self.config.service_name)
+        self.playwright, self.context, self.page, _ = await launch_browser(self.config.service_name)
         self.page.on("response", self._handle_response)
-        self._session = session
 
-        # Apply service-specific init scripts (localStorage setup, etc.)
         for script in self.config.init_scripts:
             await self.page.add_init_script(script)
 
-        # Apply service-specific cookies
         if self.config.cookies:
             await self.context.add_cookies(self.config.cookies)
 
@@ -182,14 +196,13 @@ class ChatService(ABC):
                     if modified:
                         await route.continue_(post_data=json.dumps(body))
                         return
-            except:
+            except Exception:
                 pass
             await route.continue_()
 
         await self.page.route(self._get_intercept_pattern(), intercept)
 
     async def _navigate_and_login(self):
-        """Navigate to service and handle login if needed."""
         if not self.page:
             raise RuntimeError("Browser page not initialized")
         await self.page.goto(self.config.base_url, timeout=120000, wait_until="domcontentloaded")
@@ -198,9 +211,6 @@ class ChatService(ABC):
             await self._handle_login()
 
     async def _handle_login(self):
-        """Handle login flow with popup and polling."""
-        # CRITICAL: Close browser first to release profile lock
-        # The login popup needs exclusive access to the same profile
         await close_browser(self.playwright, self.context)
         self.playwright = None
         self.context = None
@@ -210,56 +220,53 @@ class ChatService(ABC):
             None, self.config.service_name, self.config.login_event, self.config.login_selectors
         )
 
-        # Relaunch browser with new session
         await self._launch_browser()
 
-        # Inject cookies from login
         if "cookies" in new_session:
             await self.page.context.add_cookies(new_session["cookies"])
 
-        # Navigate - Firefox profile handles localStorage
         await self.page.goto(self.config.base_url, timeout=120000, wait_until="domcontentloaded")
 
     async def _wait_for_interface(self):
-        """Wait for chat interface to be ready."""
         await self.page.wait_for_selector(self.config.selectors["textarea"], timeout=30000)
 
     async def _upload_image(self, image_path: str):
-        """Upload an image if provided."""
+        """Upload image and wait for API completion."""
         log("Attaching input image...", "↑")
+        self.upload_complete = None
+
         try:
             file_input = self.page.locator('input[type="file"]').first
             await file_input.set_input_files(image_path)
-            await asyncio.sleep(1)
-        except:
+
+            upload_start = time.time()
+            while time.time() - upload_start < 30:
+                if self.upload_complete:
+                    log(f"Upload complete: {self.upload_complete['file_id']}", "✓")
+                    return
+                await asyncio.sleep(0.1)
+            log("Upload timeout - proceeding anyway", "⚠")
+        except Exception:
             log("Image upload not available", "⚠")
 
     async def _send_prompt(self, prompt: str):
-        """Type and send the prompt."""
+        """Send prompt - fill textarea and press Enter."""
         prompt_preview = prompt[:60] + "..." if len(prompt) > 60 else prompt
         log(f'Typing prompt: "{prompt_preview}"', "✎")
 
-        await self.page.keyboard.insert_text(prompt)
+        textarea = self.page.locator(self.config.selectors["textarea"]).first
+        await textarea.fill(prompt)
         self.progress.update(35)
 
-        send_btn = self.page.locator(self.config.selectors["send_button"])
-        await send_btn.wait_for(state="visible", timeout=10000)
-
-        # Wait for button to be enabled
-        for _ in range(50):
-            if await send_btn.is_enabled():
-                break
-            await asyncio.sleep(0.1)
-
         self.listening = True
-        await self._click_send(send_btn)
+        await self._click_send()
         log("Prompt sent - awaiting response...", "→")
         await asyncio.sleep(0.5)
         await self._update_preview()
 
-    async def _click_send(self, send_btn):
-        """Click the send button. Override for different behavior."""
-        await send_btn.click()
+    async def _click_send(self):
+        """Default: press Enter. Override if provider needs button click."""
+        await self.page.keyboard.press("Enter")
 
     async def _wait_for_response(self) -> tuple[str, list[bytes]]:
         """Wait for response to complete and extract content."""
@@ -267,60 +274,62 @@ class ChatService(ABC):
         await self.page.wait_for_selector(self.config.selectors["response"], timeout=60000)
         self.progress.update(50)
 
-        # Activity-based timeout
         wait_start = time.time()
-        last_activity = time.time()
         last_preview = 0
         last_image_count = 0
-        last_text_length = 0
-
-        INACTIVITY_TIMEOUT = 30  # Exit if no activity for 30s
+        response_text = ""
+        INACTIVITY_TIMEOUT = 50 if self._expect_image else 40
+        RETRY_AFTER_NO_RESPONSE = 10  # Retry if no API response after 10s
+        retry_count = 0
+        max_retries = 2
 
         while True:
             await asyncio.sleep(0.5)
             elapsed = time.time() - wait_start
-            inactive = time.time() - last_activity
+
+            # Check for API error first
+            if self.api_error:
+                break
+
+            # API completion signal (set by _handle_response)
+            if self.api_completion:
+                response_text = self.api_completion.get("text", "")
+                await asyncio.sleep(0.5)  # Brief wait for final images
+                break
+
+            # Retry if no API responses after 10s (request may not have been processed)
+            if self.response_count == 0 and elapsed >= RETRY_AFTER_NO_RESPONSE and retry_count < max_retries:
+                retry_count += 1
+                log(f"No response after {RETRY_AFTER_NO_RESPONSE}s - retrying ({retry_count}/{max_retries})", "⟳")
+                await self._click_send()
+                wait_start = time.time()  # Reset timer
+                continue
 
             # Check max timeout (safety net)
             if elapsed >= self.config.response_timeout:
                 log(f"Max timeout reached ({self.config.response_timeout}s)", "⚠")
                 break
 
-            # Check inactivity timeout
-            if inactive >= INACTIVITY_TIMEOUT:
-                log(f"No activity for {INACTIVITY_TIMEOUT}s - assuming complete", "✓")
-                break
-
-            try:
-                # Check for error state
-                if await self._check_error_state():
-                    raise Exception(f"{self.config.service_name.title()} failed. Please try again.")
-
-                # Check for completion
-                completion_selector = await self._check_completion()
-                if completion_selector:
-                    log(f"Completion detected: {completion_selector}", "✓")
-                    await asyncio.sleep(2)  # Wait for network capture
+            # Check for image ready signal (download button visible = image fully rendered)
+            if self._expect_image and self.config.image_ready_selector:
+                if await self.page.locator(self.config.image_ready_selector).count() > 0:
+                    log("Image ready (download button visible)", "✓")
+                    response_text = "Image generated"
                     break
 
-                # Track activity: new images
-                if len(self.captured_images) > last_image_count:
-                    last_activity = time.time()
-                    last_image_count = len(self.captured_images)
+            # Track new images and extend timeout (+10s per new image)
+            if len(self.captured_images) > last_image_count:
+                last_image_count = len(self.captured_images)
 
-                # Track activity: text changed
-                try:
-                    current_text = await self.extract_response_text()
-                    if len(current_text) != last_text_length:
-                        last_activity = time.time()
-                        last_text_length = len(current_text)
-                except:
-                    pass
-
-            except Exception as e:
-                if "failed" in str(e).lower():
-                    raise
-                pass
+            # Check inactivity timeout (extended by image captures)
+            effective_timeout = INACTIVITY_TIMEOUT + (last_image_count * 10)
+            if elapsed >= effective_timeout:
+                if self._expect_image and len(self.captured_images) > 0:
+                    log(f"Timeout ({effective_timeout:.0f}s) - completing with captured images", "✓")
+                    response_text = "Image generated"
+                    break
+                log(f"No API response for {INACTIVITY_TIMEOUT}s", "⚠")
+                break
 
             # Update preview every 3 seconds
             if elapsed - last_preview >= 3:
@@ -333,8 +342,24 @@ class ChatService(ABC):
 
         self.progress.update(95)
 
-        # Try DOM fallback for images
-        if not self.captured_images:
+        # If API didn't provide text, check for errors
+        if not response_text:
+            if self.api_error:
+                status = self.api_error["status"]
+                body = self.api_error["body"]
+                error_msg = body.get("error", {}).get("message", f"HTTP {status} error")
+                raise Exception(f"API error {status}: {error_msg}")
+
+            # Extract from DOM (normal for ChatGPT SSE streams)
+            response_text = await self.extract_response_text()
+            # If we have images but no text, that's OK for image generation
+            if not response_text and self.captured_images and self._expect_image:
+                response_text = "Image generated"
+            elif not response_text:
+                raise Exception("No response text or images")
+
+        # Try DOM fallback for images (only if expecting images)
+        if self._expect_image and not self.captured_images:
             log("No images from network capture, trying DOM fallback...", "○")
             self.captured_images = await self._extract_images_from_dom()
             if self.captured_images:
@@ -342,34 +367,104 @@ class ChatService(ABC):
             else:
                 log("DOM fallback found no images", "⚠")
 
-        # Extract text
-        response_text = await self.extract_response_text()
-
         self.progress.update(95)
         await self._update_preview()
 
         return response_text, self.captured_images
 
     async def _update_preview(self):
-        """Update the progress bar with a preview screenshot."""
         if not self.progress.preview:
             return
-        preview_img = await update_preview(self.page)
-        if preview_img:
-            self.progress.update(self.progress.current, preview_img)
+        from ..core.browser import BrowserSession
+
+        session = BrowserSession(self.config.service_name)
+        session.page = self.page
+        await session.update_preview_if_enabled(self.progress)
 
     async def _handle_response(self, response):
-        """Handle network responses to capture images."""
+        url = response.url
+
+        # Track uploads (regardless of listening state - uploads happen before prompt)
+        if self._is_api_response(url):
+            try:
+                import json
+
+                text = await response.text()
+
+                # Check for upload completion (always check, even before listening)
+                if response.status >= 200 and response.status < 300:
+                    for line in text.split("\n"):
+                        if line.strip():
+                            try:
+                                body = json.loads(line)
+                                upload_signal = await self.handle_upload_response_body(body)
+                                if upload_signal and upload_signal.get("complete"):
+                                    self.upload_complete = upload_signal
+                                    # Don't return - continue to check for text completion below
+                                    break
+                            except json.JSONDecodeError:
+                                pass
+            except Exception:
+                pass
+
+        # Only track text responses if we're listening (after prompt sent)
         if not self.listening:
             return
-
-        url = response.url
 
         # Track API responses for progress
         if self._is_api_response(url):
             self.response_count += 1
-            self.last_activity = time.time()
             self.progress.update(min(40 + self.response_count * 3, 50))
+
+            # Parse API response bodies
+            try:
+                import json
+
+                text = await response.text()
+
+                # Check for error responses (4xx, 5xx)
+                if response.status >= 400:
+                    try:
+                        error_body = json.loads(text)
+                        self.api_error = {
+                            "status": response.status,
+                            "body": error_body,
+                            "url": url,
+                        }
+                        error_msg = error_body.get("error", {}).get("message", f"HTTP {response.status}")
+                        log(f"API error {response.status}: {error_msg}", "✕")
+                    except json.JSONDecodeError:
+                        self.api_error = {
+                            "status": response.status,
+                            "body": text,
+                            "url": url,
+                        }
+                        log(f"API error {response.status}", "✕")
+                    return
+
+                # Parse success responses (200-299)
+                if response.status >= 200 and response.status < 300:
+                    # Quick completion detection (ChatGPT SSE format)
+                    # Skip for image gen - wait for download button instead
+                    if "message_stream_complete" in text and not self._expect_image:
+                        log("Stream complete - extracting from DOM", "✓")
+                        self.api_completion = {"complete": True, "text": ""}
+                    # Parse JSON lines for Grok completion detection
+                    for line in text.splitlines():
+                        line = line.strip()
+                        if line.startswith("data:"):
+                            line = line[5:].lstrip()
+                        if not line or line.startswith("event:") or line == "[DONE]":
+                            continue
+                        try:
+                            body = json.loads(line)
+                            signal = await self.handle_api_response_body(body)
+                            if signal and signal.get("complete"):
+                                self.api_completion = signal
+                        except json.JSONDecodeError:
+                            pass
+            except Exception:
+                pass
 
         # Capture images
         content_type = response.headers.get("content-type", "")
@@ -381,11 +476,10 @@ class ChatService(ABC):
                         self.captured_images.append(data)
                         log_media_capture(data, "image")
                         self.progress.update(min(50 + len(self.captured_images) * 15, 95))
-                except:
+                except Exception:
                     pass
 
     async def _cleanup(self):
-        """Clean up browser resources."""
         await close_browser(self.playwright, self.context)
 
     # --- Abstract methods (must be implemented by subclasses) ---
@@ -405,32 +499,41 @@ class ChatService(ABC):
 
     # --- Hook methods (can be overridden) ---
 
+    async def handle_api_response_body(self, body: dict) -> dict | None:
+        """Parse API response body for completion signals.
+
+        Returns dict with:
+        - "complete": bool - whether response is finished
+        - "text": str - extracted text (if available)
+        - "metadata": dict - any metadata
+
+        Returns None if not applicable (base implementation).
+        """
+        return None
+
+    async def handle_upload_response_body(self, body: dict) -> dict | None:
+        """Parse upload completion signals from API responses.
+
+        Returns dict with:
+        - "complete": bool - upload finished
+        - "file_id": str - uploaded file ID
+        - "metadata": dict - provider metadata
+
+        Returns None if not applicable (base implementation).
+        """
+        return None
+
     def _needs_interception(self, model: str, system_message: str | None, **kwargs) -> bool:
-        """Check if request interception is needed."""
         return bool(model or system_message)
 
     def _get_intercept_pattern(self) -> str:
-        """Get the URL pattern for request interception."""
         return "**/*"
 
     def _is_api_response(self, url: str) -> bool:
-        """Check if URL is an API response for progress tracking."""
         return False
 
     def _matches_image_pattern(self, url: str) -> bool:
-        """Check if URL matches image capture patterns."""
         return any(pattern in url for pattern in self.config.image_url_patterns)
-
-    async def _check_error_state(self) -> bool:
-        """Check if the page is in an error state."""
-        return False
-
-    async def _check_completion(self) -> str | None:
-        """Check if response is complete. Returns matched selector or None."""
-        for selector in self.config.completion_selectors:
-            if await self.page.locator(selector).count() > 0:
-                return selector
-        return None
 
     def _select_best_image(self, images: list[bytes]) -> bytes | None:
         """Select the best image - last one that meets quality criteria.
@@ -444,7 +547,6 @@ class ChatService(ABC):
         return images[-1]
 
     async def _extract_images_from_dom(self) -> list[bytes]:
-        """Fallback: extract images from DOM."""
         images = []
         try:
             imgs = self.page.locator(f"{self.config.selectors['response']} img")
@@ -457,6 +559,6 @@ class ChatService(ABC):
                             data = await resp.body()
                             if len(data) > self.config.image_min_size:
                                 images.append(data)
-        except:
+        except Exception:
             pass
         return images

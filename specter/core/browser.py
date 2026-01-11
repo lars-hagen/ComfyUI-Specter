@@ -1,8 +1,10 @@
 """Shared browser utilities for Specter nodes."""
 
 import asyncio
+import contextvars
 import os
 import subprocess
+from contextlib import contextmanager
 from datetime import datetime
 from io import BytesIO
 from typing import Any
@@ -15,6 +17,20 @@ from .session import load_session
 
 # Track if we've already checked/installed Firefox this session
 _firefox_installed = False
+
+# Context variable for current operation (e.g., "GrokT2I", "GrokChat")
+_log_context: contextvars.ContextVar[str | None] = contextvars.ContextVar("log_context", default=None)
+
+
+@contextmanager
+def log_context(name: str):
+    """Set logging context for a block of code. All logs will include this context."""
+    token = _log_context.set(name)
+    try:
+        yield
+    finally:
+        _log_context.reset(token)
+
 
 # Cached browser health status
 _browser_ready: bool | None = None
@@ -58,9 +74,11 @@ def ensure_firefox_installed():
 
 
 def log(msg, symbol="▸"):
-    """Log with timestamp and symbol."""
+    """Log with timestamp, context, and symbol."""
     ts = datetime.now().strftime("%H:%M:%S")
-    print(f"[Specter {ts}] {symbol} {msg}")
+    ctx = _log_context.get()
+    ctx_str = f" {ctx}:" if ctx else ""
+    print(f"[Specter {ts}]{ctx_str} {symbol} {msg}")
 
 
 def _run_browser_check() -> tuple[bool, str | None]:
@@ -267,6 +285,7 @@ async def create_browser(headless: bool = True, viewport: dict | None = None, pr
             viewport=vp,  # type: ignore[arg-type]
             firefox_user_prefs=FIREFOX_PREFS,
             color_scheme="dark",
+            timeout=10000,  # 10s timeout for browser launch
         )
         page = context.pages[0] if context.pages else await context.new_page()
         browser = None
@@ -274,6 +293,7 @@ async def create_browser(headless: bool = True, viewport: dict | None = None, pr
         browser = await playwright.firefox.launch(
             headless=headless,
             firefox_user_prefs=FIREFOX_PREFS,
+            timeout=10000,  # 10s timeout for browser launch
         )
         context = await browser.new_context(viewport=vp, color_scheme="dark")  # type: ignore[arg-type]
         page = await context.new_page()
@@ -435,16 +455,43 @@ class BrowserSession:
         self.session: dict | None = None
 
     async def start(self) -> "BrowserSession":
-        """Start browser session. Acquires service lock."""
+        """Start browser session. Acquires service lock with crash recovery."""
         await self._lock.acquire()
         try:
             self.playwright, self.context, self.page, self.session = await launch_browser(
                 self.service, viewport=self.viewport, headless=self.headless, purpose=self.purpose
             )
-        except Exception:
+        except Exception as e:
+            # Try recovery: clear profile lock and retry once
+            error_msg = str(e).lower()
+            if "lock" in error_msg or "running" in error_msg or "timeout" in error_msg:
+                log("Browser launch failed, attempting recovery...", "⟳")
+                await self._clear_profile_lock()
+                await asyncio.sleep(1)
+                try:
+                    self.playwright, self.context, self.page, self.session = await launch_browser(
+                        self.service, viewport=self.viewport, headless=self.headless, purpose=self.purpose
+                    )
+                    log("Recovery successful", "✓")
+                    return self
+                except Exception:
+                    pass  # Fall through to release lock and raise original error
             self._lock.release()
             raise
         return self
+
+    async def _clear_profile_lock(self):
+        """Clear Firefox profile lock files after a crash."""
+        profile_dir = os.path.join(PROFILES_DIR, f"firefox-{self.service}")
+        lock_files = [".parentlock", "lock", "parent.lock"]
+        for lock_file in lock_files:
+            lock_path = os.path.join(profile_dir, lock_file)
+            try:
+                if os.path.exists(lock_path):
+                    os.remove(lock_path)
+                    log(f"Removed stale lock: {lock_file}", "○")
+            except Exception:
+                pass
 
     async def dump_error(self, error: Exception):
         """Dump debug info for an error."""
@@ -469,3 +516,28 @@ class BrowserSession:
             await self.dump_error(exc_val)
         await self.close()
         return False  # Don't suppress exceptions
+
+    async def update_preview_if_enabled(self, progress: ProgressTracker):
+        """Update preview if enabled. Call in polling loops."""
+        if not progress.preview:
+            return
+        preview_img = await update_preview(self.page)
+        if preview_img:
+            progress.update(progress.current, preview_img)
+
+    async def setup_response_handler(self, handler):
+        """Setup response event handler."""
+        self.page.on("response", handler)
+
+    async def wait_for_login(self, base_url: str, login_selectors: list[str], login_event: str):
+        """Navigate, check login, handle if needed."""
+        from ..core.session import handle_login_flow, is_logged_in
+
+        await self.page.goto(base_url, timeout=120000, wait_until="domcontentloaded")
+        if not await is_logged_in(self.page, login_selectors):
+            await self.close()
+            new_session = await handle_login_flow(None, self.service, login_event, login_selectors)
+            await self.start()
+            if new_session and "cookies" in new_session:
+                await self.context.add_cookies(new_session["cookies"])
+            await self.page.goto(base_url, timeout=120000, wait_until="domcontentloaded")

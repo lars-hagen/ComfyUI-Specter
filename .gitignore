@@ -1,8 +1,13 @@
 # User data (sessions, browser profiles)
 user_data/
 .claude/CLAUDE.md
+
+# Internals documentation
+internals/
+
 # Debug artifacts
 debug_dumps/
+debug/
 *_diagnostic.json
 *_comparison.json
 *_cookies.json

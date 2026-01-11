@@ -98,11 +98,29 @@ async def dump_debug_info(page, error: Exception, service: str = "unknown"):
         except Exception as e:
             debug_info["trace"] = f"(failed: {e})"
 
-        # Capture HTML snapshot
+        # Capture minimal DOM structure (no inline content to avoid huge dumps)
         try:
-            html_content = await page.content()
+            dom_structure = await page.evaluate("""() => {
+                const elements = [];
+                document.querySelectorAll('img, button, input, textarea, [contenteditable]').forEach(el => {
+                    const info = {
+                        tag: el.tagName.toLowerCase(),
+                        id: el.id || null,
+                        class: el.className || null,
+                        alt: el.alt || null,
+                        placeholder: el.placeholder || null,
+                        type: el.type || null,
+                    };
+                    // Only include src URL for images, not base64
+                    if (el.tagName === 'IMG' && el.src && !el.src.startsWith('data:')) {
+                        info.src = el.src;
+                    }
+                    elements.push(info);
+                });
+                return elements.slice(0, 50); // Limit to first 50 elements
+            }""")
             with open(html_path, "w", encoding="utf-8") as f:
-                f.write(html_content)
+                json.dump(dom_structure, f, indent=2)
             debug_info["html_snapshot"] = html_path.name
         except Exception as e:
             debug_info["html_snapshot"] = f"(failed: {e})"

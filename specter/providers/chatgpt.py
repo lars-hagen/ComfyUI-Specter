@@ -31,14 +31,11 @@ class ChatGPTService(ChatService):
         login_event="specter-login-required",
         image_url_patterns=["estuary/content", "oaiusercontent.com"],
         image_min_size=500000,  # 500KB for ChatGPT images
-        completion_selectors=[
-            'button[aria-label="Download this image"]',
-            'button[aria-label="Like this image"]',
-            'button[data-testid="good-response-turn-action-button"]',
-        ],
         response_timeout=300,
+        image_ready_selector='button[aria-label="Download this image"]',
         init_scripts=[
             """localStorage.setItem('oai/apps/theme', '"dark"');""",
+            """localStorage.removeItem('RESUME_TOKEN_STORE_KEY');""",
         ],
         cookies=[
             {"name": "oai-allow-ne", "value": "true", "domain": ".chatgpt.com", "path": "/"},
@@ -49,14 +46,18 @@ class ChatGPTService(ChatService):
         return "**/backend-api/**/conversation"
 
     def _is_api_response(self, url: str) -> bool:
-        return "backend-api/f/conversation" in url or "backend-api/conversation" in url
+        return (
+            "backend-api/f/conversation" in url
+            or "backend-api/conversation" in url
+            or "backend-api/files/process_upload_stream" in url
+        )
 
     def modify_request_body(self, body: dict, model: str, system_message: str | None, **kwargs) -> bool:
         """Modify request to set model and inject system message."""
         modified = False
 
         if model and "model" in body and body["model"] != model:
-            log(f"Intercepting request: {body['model']} → {model}", "⟳")
+            log(f"Intercepting request: model = '{model}'", "⟳")
             body["model"] = model
             modified = True
 
@@ -68,14 +69,21 @@ class ChatGPTService(ChatService):
                 "metadata": {},
             }
             body["messages"].insert(0, system_msg)
-            log(f'Injecting system prompt: "{system_message[:40]}..."', "⟳")
+            log(f"Intercepting request: messages[0] = system('{system_message[:40]}...')", "⟳")
             modified = True
 
         return modified
 
-    async def _click_send(self, send_btn):
-        """ChatGPT uses Enter key instead of button click."""
-        await self.page.keyboard.press("Enter")
+    async def handle_upload_response_body(self, body: dict) -> dict | None:
+        """Detect ChatGPT upload completion."""
+        event = body.get("event", "")
+        if event == "file.processing.completed" and body.get("progress") == 100:
+            return {
+                "complete": True,
+                "file_id": body.get("file_id", "unknown"),
+                "metadata": body,
+            }
+        return None
 
     async def extract_response_text(self) -> str:
         """Extract response text from ChatGPT's markdown prose."""
@@ -83,9 +91,16 @@ class ChatGPTService(ChatService):
             prose = self.page.locator(f"{self.config.selectors['response']} .markdown.prose").last
             if await prose.count() > 0:
                 return await prose.inner_text(timeout=2000)
-        except:
+        except Exception:
             pass
         return ""
+
+    async def _handle_response(self, response):
+        """Override to ignore conversation/init 404 errors (new conversation flow)."""
+        if response.status == 404 and "conversation/init" in response.url:
+            log("Ignoring 404 from conversation/init (new conversation)", "○")
+            return
+        await super()._handle_response(response)
 
 
 # Singleton instance
@@ -100,6 +115,7 @@ async def chat_with_gpt(
     pbar=None,
     preview: bool = False,
     _expect_image: bool = False,
+    disable_tools: bool = False,  # Unused - for API parity with Grok
 ) -> tuple[str, bytes | None]:
     """Send message to ChatGPT and return response text + captured image.
 

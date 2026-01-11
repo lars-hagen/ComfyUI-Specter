@@ -5,6 +5,7 @@ from ..base import ChatService, ServiceConfig
 
 # Defined here to avoid circular import with __init__.py
 AGE_VERIFICATION_INIT_SCRIPT = """localStorage.setItem('age-verif', '{"state":{"stage":"pass"},"version":3}');"""
+DISMISS_NOTIFICATIONS_SCRIPT = """localStorage.setItem('notifications-toast-dismiss-count', '999');"""
 
 
 class GrokService(ChatService):
@@ -14,8 +15,7 @@ class GrokService(ChatService):
         service_name="grok",
         base_url="https://grok.com",
         selectors={
-            "textarea": 'div[contenteditable="true"]',
-            "send_button": '[aria-label="Submit"]',
+            "textarea": 'textarea[aria-label="Ask Grok anything"], div[contenteditable="true"]',
             "response": ".response-content-markdown",
         },
         login_selectors=[
@@ -29,12 +29,8 @@ class GrokService(ChatService):
         login_event="specter-grok-login-required",
         image_url_patterns=["assets.grok.com"],
         image_min_size=80000,  # 80KB for Grok images (thumbnails are ~50KB)
-        completion_selectors=[
-            '[aria-label="Download"]',
-            '[aria-label="Like"]',
-        ],
-        response_timeout=90,
-        init_scripts=[AGE_VERIFICATION_INIT_SCRIPT],
+        response_timeout=40,
+        init_scripts=[AGE_VERIFICATION_INIT_SCRIPT, DISMISS_NOTIFICATIONS_SCRIPT],
     )
 
     def _get_intercept_pattern(self) -> str:
@@ -51,70 +47,94 @@ class GrokService(ChatService):
         """Modify request for model, image count and system message."""
         modified = False
         image_count = kwargs.get("image_count")
+        disable_tools = kwargs.get("disable_tools", False)
+
+        # Disable tools at API level (for prompt enhancer)
+        if disable_tools:
+            if not body.get("disableSearch"):
+                log("Intercepting request: disableSearch = true", "⟳")
+                body["disableSearch"] = True
+                modified = True
+            if body.get("enableImageGeneration"):
+                log("Intercepting request: enableImageGeneration = false", "⟳")
+                body["enableImageGeneration"] = False
+                modified = True
 
         # Disable side-by-side feedback dialog
         if body.get("enableSideBySide"):
+            log("Intercepting request: enableSideBySide = false", "⟳")
             body["enableSideBySide"] = False
+            modified = True
+
+        # Disable text follow-ups
+        if not body.get("disableTextFollowUps"):
+            log("Intercepting request: disableTextFollowUps = true", "⟳")
+            body["disableTextFollowUps"] = True
+            modified = True
+
+        # Disable self-harm short circuit
+        if not body.get("disableSelfHarmShortCircuit"):
+            log("Intercepting request: disableSelfHarmShortCircuit = true", "⟳")
+            body["disableSelfHarmShortCircuit"] = True
             modified = True
 
         # Inject model
         if model and "modelName" in body and body.get("modelName") != model:
-            log(f"Switching model: {body.get('modelName')} → {model}", "⟳")
+            log(f"Intercepting request: modelName = '{model}'", "⟳")
             body["modelName"] = model
             modified = True
 
         # Modify image generation count
         if image_count is not None and "imageGenerationCount" in body:
             if body["imageGenerationCount"] != image_count:
-                log(f"Setting image count: {body['imageGenerationCount']} → {image_count}", "⟳")
+                log(f"Intercepting request: imageGenerationCount = {image_count}", "⟳")
                 body["imageGenerationCount"] = image_count
                 modified = True
 
         # Inject system message via customPersonality
         if system_message:
-            log(f'Injecting system prompt: "{system_message[:40]}..."', "⟳")
+            log(f"Intercepting request: customPersonality = '{system_message[:40]}...'", "⟳")
             body["customPersonality"] = system_message
             modified = True
 
         return modified
 
-    async def _click_send(self, send_btn):
-        """Grok uses Enter key instead of button click."""
-        await self.page.keyboard.press("Enter")
+    async def handle_api_response_body(self, body: dict) -> dict | None:
+        """Parse Grok's streaming API response for completion signals."""
+        if not body:
+            return None
+
+        # Extract nested response object
+        result = body.get("result", {})
+        response = result.get("response", {})
+
+        # Check for modelResponse with message (this means response is complete)
+        model_response = response.get("modelResponse", {})
+        text = model_response.get("message", "")
+
+        if text:
+            log("API completion: modelResponse received", "✓")
+            return {
+                "complete": True,
+                "text": text,
+                "metadata": response.get("finalMetadata", {}),
+            }
+
+        return None
+
+    async def handle_upload_response_body(self, body: dict) -> dict | None:
+        """Detect Grok upload completion."""
+        if "fileMetadataId" in body and "fileMimeType" in body:
+            return {
+                "complete": True,
+                "file_id": body["fileMetadataId"],
+                "metadata": body,
+            }
+        return None
 
     def _matches_image_pattern(self, url: str) -> bool:
         """Only capture images from /generated/ path (not uploads)."""
         return "assets.grok.com" in url and "/generated/" in url
-
-    async def _check_error_state(self) -> bool:
-        """Check for Grok error states and handle feedback dialogs."""
-        # Handle "Which response do you prefer?" feedback dialog
-        skip_btn = self.page.locator('button:has-text("Skip Selection")')
-        if await skip_btn.count() > 0:
-            log("Skipping feedback dialog", "○")
-            await skip_btn.click()
-            return False  # Not an error, continue waiting
-
-        retry_btn = 'button:has-text("Retry")'
-        error_msg = 'text="unable to finish"'
-        if await self.page.locator(retry_btn).count() > 0:
-            log("Grok failed to respond - try again or use different prompt", "✕")
-            return True
-        if await self.page.locator(error_msg).count() > 0:
-            log("Grok was unable to finish", "✕")
-            return True
-        return False
-
-    async def _check_completion(self) -> bool:
-        """Check for Grok completion indicators."""
-        for selector in self.config.completion_selectors:
-            if await self.page.locator(selector).count() > 0:
-                if "Download" in selector:
-                    log("Image generation complete", "✦")
-                else:
-                    log("Response complete", "✓")
-                return True
-        return False
 
     async def extract_response_text(self) -> str:
         """Extract response text from Grok's markdown response."""
@@ -122,7 +142,7 @@ class GrokService(ChatService):
             response_el = self.page.locator(self.config.selectors["response"]).last
             if await response_el.count() > 0:
                 return await response_el.inner_text(timeout=2000)
-        except:
+        except Exception:
             pass
         return ""
 
@@ -140,6 +160,7 @@ async def chat_with_grok(
     preview: bool = False,
     image_count: int | None = None,
     _expect_image: bool = False,
+    disable_tools: bool = False,
 ) -> tuple[str, bytes | None]:
     """Send message to Grok and return response text + captured image.
 
@@ -154,4 +175,5 @@ async def chat_with_grok(
         preview=preview,
         image_count=image_count,
         _expect_image=_expect_image,
+        disable_tools=disable_tools,
     )

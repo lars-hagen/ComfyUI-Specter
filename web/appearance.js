@@ -1,334 +1,369 @@
 /**
  * Specter Node Appearance Configuration
- * Custom styling for Specter nodes in ComfyUI
  */
 
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
-// Reusable login popup for any service (ChatGPT, Grok, etc.)
-function createLoginPopup(service, startEndpoint, title) {
-    const popup = {
-        el: null,
-        canvas: null,
-        ctx: null,
-        ws: null,
-        active: false,
-        onClose: null,
-        cursorX: null,
-        cursorY: null,
-        lastScreenshot: null,
-        loadingOverlay: null,
+// Inject global CSS once
+const style = document.createElement("style");
+style.textContent = `
+    .specter-loading::after { content: ''; animation: specter-dots 1.5s steps(4, end) infinite; }
+    @keyframes specter-dots { 0%,25%{content:''} 26%,50%{content:'.'} 51%,75%{content:'..'} 76%,100%{content:'...'} }
+`;
+document.head.appendChild(style);
 
-        createEl() {
-            if (this.el) return;
+// Single reusable browser popup
+const browserPopup = {
+    el: null,
+    canvas: null,
+    ctx: null,
+    ws: null,
+    active: false,
+    onClose: null,
+    titleEl: null,
+    subtitleEl: null,
+    loadingOverlay: null,
 
-            this.el = document.createElement("div");
-            this.el.style.cssText = `
-                display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-                z-index: 10000; background: var(--comfy-menu-bg, #353535); border-radius: 8px;
-                box-shadow: 0 8px 32px rgba(0,0,0,0.4);
-                padding: 12px; border: 1px solid var(--border-color, #4e4e4e);
-            `;
+    createEl() {
+        if (this.el) return;
 
-            const header = document.createElement("div");
-            header.style.cssText = "display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; cursor: move;";
-            header.innerHTML = `<span style="color: var(--fg-color, #fff); font-weight: 500;">${title}</span>`;
+        this.el = document.createElement("div");
+        this.el.className = "p-dialog p-component";
+        this.el.style.cssText = `
+            display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            z-index: 10000; background: var(--comfy-menu-bg, #353535); border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.4); border: 1px solid var(--border-color, #4e4e4e);
+        `;
 
-            const closeBtn = document.createElement("button");
-            closeBtn.className = "p-button p-component p-button-primary";
-            closeBtn.innerHTML = `<span class="p-button-label">Save & Close</span>`;
-            closeBtn.onclick = () => this.stop();
-            header.appendChild(closeBtn);
+        const header = document.createElement("div");
+        header.className = "p-dialog-header";
+        header.style.cssText = "display: flex; justify-content: space-between; align-items: center; padding: 12px 12px 8px 16px; cursor: move;";
 
-            this.canvas = document.createElement("canvas");
-            this.canvas.style.cssText = "cursor: pointer; display: block; border-radius: 4px;";
-            this.canvas.tabIndex = 0;
-            this.ctx = this.canvas.getContext("2d");
+        const titleContainer = document.createElement("div");
+        titleContainer.style.cssText = "display: flex; flex-direction: column; gap: 2px;";
 
-            // Loading overlay with CSS animation
-            this.loadingOverlay = document.createElement("div");
-            this.loadingOverlay.style.cssText = `
-                position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-                color: #888; font: 16px system-ui, sans-serif; display: none;
-            `;
-            this.loadingOverlay.innerHTML = `
-                Launching browser<span class="loading-dots"></span>
-                <style>
-                    .loading-dots::after {
-                        content: '';
-                        animation: loading-dots 1.5s steps(4, end) infinite;
-                    }
-                    @keyframes loading-dots {
-                        0%, 25% { content: ''; }
-                        26%, 50% { content: '.'; }
-                        51%, 75% { content: '..'; }
-                        76%, 100% { content: '...'; }
-                    }
-                </style>
-            `;
+        this.titleEl = document.createElement("span");
+        this.titleEl.style.cssText = "color: var(--fg-color, #fff); font-weight: 600; font-size: 18px; display: flex; align-items: center; gap: 8px;";
 
-            this.el.append(header, this.canvas, this.loadingOverlay);
-            document.body.appendChild(this.el);
+        this.subtitleEl = document.createElement("span");
+        this.subtitleEl.style.cssText = "color: var(--p-text-muted-color, #888); font-size: 12px; display: none;";
 
-            // Draggable
-            let dragging = false, dragX, dragY;
-            header.addEventListener("mousedown", (e) => {
-                if (e.target === closeBtn || closeBtn.contains(e.target)) return;
-                dragging = true;
-                dragX = e.clientX - this.el.offsetLeft;
-                dragY = e.clientY - this.el.offsetTop;
-            });
-            document.addEventListener("mousemove", (e) => {
-                if (!dragging) return;
-                this.el.style.left = e.clientX - dragX + "px";
-                this.el.style.top = e.clientY - dragY + "px";
-                this.el.style.transform = "none";
-            });
-            document.addEventListener("mouseup", () => dragging = false);
+        titleContainer.append(this.titleEl, this.subtitleEl);
+        header.appendChild(titleContainer);
 
-            // Canvas events - track mousedown position for click detection
-            let mouseDownPos = null;
-            const getCoords = (e) => {
-                const rect = this.canvas.getBoundingClientRect();
-                // IMPORTANT: Round to integers for pixel-perfect consistency (fixes reCAPTCHA tile selection)
-                return {
-                    x: Math.round((e.clientX - rect.left) * (this.canvas.width / rect.width)),
-                    y: Math.round((e.clientY - rect.top) * (this.canvas.height / rect.height))
-                };
+        const closeBtn = document.createElement("button");
+        closeBtn.className = "p-button p-component p-button-icon-only p-button-rounded p-button-text p-button-secondary p-dialog-close-button";
+        closeBtn.type = "button";
+        closeBtn.ariaLabel = "Close";
+        closeBtn.style.color = "var(--p-text-muted-color, #888)";
+        closeBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg" class="p-icon" aria-hidden="true"><path d="M8.01186 7.00933L12.27 2.75116C12.341 2.68501 12.398 2.60524 12.4375 2.51661C12.4769 2.42798 12.4982 2.3323 12.4999 2.23529C12.5016 2.13827 12.4838 2.0419 12.4474 1.95194C12.4111 1.86197 12.357 1.78024 12.2884 1.71163C12.2198 1.64302 12.138 1.58893 12.0481 1.55259C11.9581 1.51625 11.8617 1.4984 11.7647 1.50011C11.6677 1.50182 11.572 1.52306 11.4834 1.56255C11.3948 1.60204 11.315 1.65898 11.2488 1.72997L6.99067 5.98814L2.7325 1.72997C2.59553 1.60234 2.41437 1.53286 2.22718 1.53616C2.03999 1.53946 1.8614 1.61529 1.72901 1.74767C1.59663 1.88006 1.5208 2.05865 1.5175 2.24584C1.5142 2.43303 1.58368 2.61419 1.71131 2.75116L5.96948 7.00933L1.71131 11.2675C1.576 11.403 1.5 11.5866 1.5 11.7781C1.5 11.9696 1.576 12.1532 1.71131 12.2887C1.84679 12.424 2.03043 12.5 2.2219 12.5C2.41338 12.5 2.59702 12.424 2.7325 12.2887L6.99067 8.03052L11.2488 12.2887C11.3843 12.424 11.568 12.5 11.7594 12.5C11.9509 12.5 12.1346 12.424 12.27 12.2887C12.4053 12.1532 12.4813 11.9696 12.4813 11.7781C12.4813 11.5866 12.4053 11.403 12.27 11.2675L8.01186 7.00933Z" fill="currentColor"></path></svg>`;
+        closeBtn.onclick = () => this.stop();
+        header.appendChild(closeBtn);
+
+        const content = document.createElement("div");
+        content.className = "p-dialog-content";
+        content.style.cssText = "position: relative; padding: 0 12px 12px 12px;";
+
+        this.canvas = document.createElement("canvas");
+        this.canvas.style.cssText = "cursor: pointer; display: block; border-radius: 6px; outline: none;";
+        this.canvas.tabIndex = 0;
+        this.ctx = this.canvas.getContext("2d");
+
+        this.loadingOverlay = document.createElement("div");
+        this.loadingOverlay.style.cssText = `
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: #888; font: 16px system-ui, sans-serif; display: none;
+        `;
+        this.loadingOverlay.innerHTML = `Launching browser<span class="specter-loading"></span>`;
+
+        content.append(this.canvas, this.loadingOverlay);
+        this.el.append(header, content);
+        document.body.appendChild(this.el);
+
+        // Draggable header
+        let dragging = false, dragX, dragY;
+        header.addEventListener("mousedown", (e) => {
+            if (e.target === closeBtn || closeBtn.contains(e.target)) return;
+            dragging = true;
+            dragX = e.clientX - this.el.offsetLeft;
+            dragY = e.clientY - this.el.offsetTop;
+        });
+        document.addEventListener("mousemove", (e) => {
+            if (!dragging) return;
+            this.el.style.left = e.clientX - dragX + "px";
+            this.el.style.top = e.clientY - dragY + "px";
+            this.el.style.transform = "none";
+        });
+        document.addEventListener("mouseup", () => dragging = false);
+
+        // Canvas input handling
+        let mouseDownPos = null;
+        const getCoords = (e) => {
+            const rect = this.canvas.getBoundingClientRect();
+            return {
+                x: Math.round((e.clientX - rect.left) * (this.canvas.width / rect.width)),
+                y: Math.round((e.clientY - rect.top) * (this.canvas.height / rect.height))
             };
-            const send = (event) => {
-                if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(event));
-            };
-            this.canvas.addEventListener("mousedown", (e) => {
-                this.canvas.focus();
-                e.preventDefault();
-                const coords = getCoords(e);
-                mouseDownPos = coords;
-                send({ type: "mousedown", ...coords });
-            });
-            this.canvas.addEventListener("mouseup", (e) => {
-                e.preventDefault();
-                // CRITICAL FIX: Reuse mousedown coordinates if mouse barely moved
-                // This ensures reCAPTCHA sees identical mousedown/mouseup coords
-                const rawCoords = getCoords(e);
-                const coords = (mouseDownPos && Math.abs(rawCoords.x - mouseDownPos.x) <= 5 && Math.abs(rawCoords.y - mouseDownPos.y) <= 5)
-                    ? mouseDownPos  // Reuse exact mousedown coords
-                    : rawCoords;     // Use new coords if mouse moved significantly
+        };
+        const send = (event) => {
+            if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(event));
+        };
 
-                console.log(`[Specter] Click at (${coords.x}, ${coords.y})`);
-                send({ type: "mouseup", ...coords });
-                // If mouseup is close to mousedown, also send atomic click (for iframes like Cloudflare)
-                if (mouseDownPos && Math.abs(coords.x - mouseDownPos.x) <= 5 && Math.abs(coords.y - mouseDownPos.y) <= 5) {
-                    send({ type: "click", ...coords });
-                }
-                mouseDownPos = null;
-            });
-            this.canvas.addEventListener("mousemove", (e) => {
-                const coords = getCoords(e);
-                this.cursorX = coords.x;
-                this.cursorY = coords.y;
-                this.redrawWithCursor();
-                if (e.buttons === 1) send({ type: "mousemove", ...coords });
-            });
-            this.canvas.addEventListener("wheel", (e) => { this.canvas.focus(); e.preventDefault(); send({ type: "scroll", dx: e.deltaX, dy: e.deltaY }); }, { passive: false });
+        this.canvas.addEventListener("mousedown", (e) => {
+            this.canvas.focus();
+            e.preventDefault();
+            mouseDownPos = getCoords(e);
+            send({ type: "mousedown", ...mouseDownPos });
+        });
 
-            const stopKey = (e) => { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation(); };
-            this.canvas.addEventListener("keydown", async (e) => {
-                stopKey(e);
-                const hasCtrl = e.ctrlKey || e.metaKey;
-                if (hasCtrl && e.key.toLowerCase() === "v") {
-                    try { const text = await navigator.clipboard.readText(); if (text) send({ type: "type", text }); } catch {}
-                    return;
-                }
-                const mods = [];
-                if (hasCtrl) mods.push("Control");
-                if (e.altKey) mods.push("Alt");
-                if (e.shiftKey) mods.push("Shift");
-                if (mods.length > 0) send({ type: "keydown", key: [...mods, e.key].join("+") });
-                else if (e.key.length === 1) send({ type: "type", text: e.key });
-                else send({ type: "keydown", key: e.key });
-            }, true);
-            this.canvas.addEventListener("keyup", stopKey, true);
-            this.canvas.addEventListener("keypress", stopKey, true);
-        },
+        this.canvas.addEventListener("mouseup", (e) => {
+            e.preventDefault();
+            const raw = getCoords(e);
+            // Reuse mousedown coords if barely moved (for precise clicking)
+            const isClick = mouseDownPos && Math.abs(raw.x - mouseDownPos.x) <= 5 && Math.abs(raw.y - mouseDownPos.y) <= 5;
+            send({ type: "mouseup", ...(isClick ? mouseDownPos : raw) });
+            // Note: mousedown + mouseup = click, no separate click event needed
+            mouseDownPos = null;
+        });
 
-        async start() {
-            this.createEl();
-            this.el.style.display = "block";
+        // Throttled mousemove for hover support (~30fps to match stream)
+        let lastMove = 0;
+        this.canvas.addEventListener("mousemove", (e) => {
+            const now = Date.now();
+            if (now - lastMove < 33) return;
+            lastMove = now;
+            send({ type: "mousemove", ...getCoords(e) });
+        });
 
-            // Set canvas size for loading state (before first screenshot)
-            this.canvas.width = 600;
-            this.canvas.height = 800;
-            this.loadingOverlay.style.display = "block";
+        this.canvas.addEventListener("wheel", (e) => {
+            this.canvas.focus();
+            e.preventDefault();
+            send({ type: "scroll", dx: e.deltaX, dy: e.deltaY });
+        }, { passive: false });
 
-            try {
-                const resp = await fetch(startEndpoint, { method: "POST" });
-                const data = await resp.json();
-                if (data.status === "error") {
-                    this.loadingOverlay.style.display = "none";
-                    this.showError(data.message);
-                    return;
-                }
-                this.active = true;
-                this.connectWS();
-                this.canvas.focus();
-            } catch (e) {
-                this.loadingOverlay.style.display = "none";
-                this.showError("Failed to connect to server");
+        const stopKey = (e) => { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation(); };
+        this.canvas.addEventListener("keydown", async (e) => {
+            stopKey(e);
+            const hasCtrl = e.ctrlKey || e.metaKey;
+            if (hasCtrl && e.key.toLowerCase() === "v") {
+                try { const text = await navigator.clipboard.readText(); if (text) send({ type: "type", text }); } catch {}
+                return;
             }
-        },
+            const mods = [];
+            if (hasCtrl) mods.push("Control");
+            if (e.altKey) mods.push("Alt");
+            if (e.shiftKey) mods.push("Shift");
+            if (mods.length > 0) send({ type: "keydown", key: [...mods, e.key].join("+") });
+            else if (e.key.length === 1) send({ type: "type", text: e.key });
+            else send({ type: "keydown", key: e.key });
+        }, true);
+        this.canvas.addEventListener("keyup", stopKey, true);
+        this.canvas.addEventListener("keypress", stopKey, true);
+    },
 
-        showError(msg) {
-            // Parse clean error from verbose Playwright output
-            const clean = msg.includes("install-deps")
-                ? "Missing dependencies. Run: sudo playwright install-deps"
-                : msg.split("\n")[0];
-            // Show error in canvas
-            this.canvas.width = 450;
-            this.canvas.height = 80;
-            this.ctx.fillStyle = "#2a2a2a";
-            this.ctx.fillRect(0, 0, 450, 80);
-            this.ctx.fillStyle = "#f87171";
-            this.ctx.font = "14px system-ui, sans-serif";
-            this.ctx.fillText("⚠ " + clean, 16, 45);
-        },
+    async start(endpoint, title, onClose = null) {
+        this.createEl();
+        const isLogin = title.includes("Login");
+        this.titleEl.innerHTML = `<i class="pi pi-${isLogin ? "sign-in" : "cog"}"></i>${title}`;
+        this.subtitleEl.textContent = "Closes automatically when logged in";
+        this.subtitleEl.style.display = isLogin ? "block" : "none";
+        this.onClose = onClose;
+        this.el.style.display = "block";
+        this.canvas.width = 600;
+        this.canvas.height = 800;
+        this.loadingOverlay.innerHTML = `Launching browser<span class="specter-loading"></span>`;
+        this.loadingOverlay.style.display = "block";
 
-        connectWS() {
-            const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-            this.ws = new WebSocket(`${protocol}//${location.host}/specter/browser/ws`);
-
-            this.ws.onmessage = (e) => {
-                if (typeof e.data === "string") {
-                    const msg = JSON.parse(e.data);
-                    if (msg.type === "logged_in") {
-                        console.log(`[Specter] ${service} login detected, auto-closing`);
-                        this.stop();
-                    }
-                    return;
-                }
-
-                // Hide loading overlay on first screenshot
+        try {
+            const resp = await fetch(endpoint, { method: "POST" });
+            const data = await resp.json();
+            if (data.status === "error") {
                 this.loadingOverlay.style.display = "none";
-
-                const blob = new Blob([e.data], { type: "image/png" });
-                const img = new Image();
-                img.onload = () => {
-                    if (this.canvas.width !== img.width || this.canvas.height !== img.height) {
-                        this.canvas.width = img.width;
-                        this.canvas.height = img.height;
-                    }
-                    this.ctx.drawImage(img, 0, 0);
-                    this.lastScreenshot = img;
-                    this.redrawWithCursor();
-                    URL.revokeObjectURL(img.src);
-                };
-                img.src = URL.createObjectURL(blob);
-            };
-
-            this.ws.onclose = () => { if (this.active) setTimeout(() => this.connectWS(), 1000); };
-        },
-
-        async stop() {
-            this.active = false;
+                this.showError(data.message);
+                return;
+            }
+            this.active = true;
+            this.connectWS();
+            this.canvas.focus();
+        } catch {
             this.loadingOverlay.style.display = "none";
-            if (this.ws) { this.ws.close(); this.ws = null; }
-            if (this.el) this.el.style.display = "none";
-            try { await fetch("/specter/browser/stop", { method: "POST" }); } catch {}
-            if (this.onClose) this.onClose();
-        },
-
-        redrawWithCursor() {
-            if (!this.lastScreenshot) return;
-
-            // Redraw screenshot
-            this.ctx.drawImage(this.lastScreenshot, 0, 0);
-
-            // Draw cursor if position is set
-            if (this.cursorX !== null && this.cursorY !== null) {
-                // Draw crosshair
-                this.ctx.strokeStyle = "#00ff00";
-                this.ctx.lineWidth = 2;
-                this.ctx.beginPath();
-                this.ctx.moveTo(this.cursorX - 10, this.cursorY);
-                this.ctx.lineTo(this.cursorX + 10, this.cursorY);
-                this.ctx.moveTo(this.cursorX, this.cursorY - 10);
-                this.ctx.lineTo(this.cursorX, this.cursorY + 10);
-                this.ctx.stroke();
-
-                // Draw circle
-                this.ctx.beginPath();
-                this.ctx.arc(this.cursorX, this.cursorY, 8, 0, 2 * Math.PI);
-                this.ctx.stroke();
-
-                // Draw coordinates
-                this.ctx.fillStyle = "#00ff00";
-                this.ctx.font = "12px monospace";
-                this.ctx.fillText(`(${Math.round(this.cursorX)}, ${Math.round(this.cursorY)})`, this.cursorX + 15, this.cursorY - 10);
-            }
+            this.showError("Failed to connect to server");
         }
+    },
+
+    showError(msg) {
+        const clean = msg.includes("install-deps") ? "Missing dependencies. Run: sudo playwright install-deps" : msg.split("\n")[0];
+        this.canvas.width = 450;
+        this.canvas.height = 80;
+        this.ctx.fillStyle = "#2a2a2a";
+        this.ctx.fillRect(0, 0, 450, 80);
+        this.ctx.fillStyle = "#f87171";
+        this.ctx.font = "14px system-ui, sans-serif";
+        this.ctx.fillText("⚠ " + clean, 16, 45);
+    },
+
+    showSuccess() {
+        this.loadingOverlay.innerHTML = `<span style="color: #4ade80; display: flex; align-items: center; gap: 8px;"><i class="pi pi-check-circle" style="font-size: 20px;"></i>Logged in successfully</span>`;
+        this.loadingOverlay.style.display = "block";
+    },
+
+    connectWS() {
+        const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+        this.ws = new WebSocket(`${protocol}//${location.host}/specter/browser/ws`);
+
+        this.ws.onmessage = async (e) => {
+            if (typeof e.data === "string") {
+                if (JSON.parse(e.data).type === "logged_in") {
+                    this.showSuccess();
+                    setTimeout(() => this.stop(), 1200);
+                }
+                return;
+            }
+            this.loadingOverlay.style.display = "none";
+            // createImageBitmap is faster than Image() for decoding
+            const bitmap = await createImageBitmap(new Blob([e.data], { type: "image/jpeg" }));
+            if (this.canvas.width !== bitmap.width || this.canvas.height !== bitmap.height) {
+                this.canvas.width = bitmap.width;
+                this.canvas.height = bitmap.height;
+            }
+            this.ctx.drawImage(bitmap, 0, 0);
+            bitmap.close();
+        };
+
+        this.ws.onclose = () => { if (this.active) setTimeout(() => this.connectWS(), 1000); };
+    },
+
+    async stop() {
+        this.active = false;
+        this.loadingOverlay.style.display = "none";
+        if (this.ws) { this.ws.close(); this.ws = null; }
+        if (this.el) this.el.style.display = "none";
+        try { await fetch("/specter/browser/stop", { method: "POST" }); } catch {}
+        if (this.onClose) this.onClose();
+    },
+};
+
+// Factory for login button settings
+function createLoginSetting(id, service) {
+    const statusEndpoint = `/specter/${service.toLowerCase()}/status`;
+    const logoutEndpoint = `/specter/${service.toLowerCase()}/logout`;
+    const loginEndpoint = `/specter/${service.toLowerCase()}/browser/start`;
+
+    return {
+        id,
+        category: ["Specter", " Authentication", service],
+        name: service,
+        tooltip: `Log in to ${service} via embedded browser`,
+        type: () => {
+            const container = document.createElement("div");
+            container.className = "flex items-center gap-4";
+
+            const statusText = document.createElement("span");
+            statusText.className = "text-muted";
+            statusText.textContent = "Checking...";
+
+            const loginBtn = document.createElement("button");
+            loginBtn.type = "button";
+            loginBtn.className = "p-button p-component";
+            loginBtn.style.minWidth = "116px";
+
+            container.append(statusText, loginBtn);
+
+            let isLoggedIn = false;
+
+            const checkStatus = async () => {
+                try {
+                    const data = await fetch(statusEndpoint).then(r => r.json());
+                    isLoggedIn = data.logged_in;
+                    statusText.textContent = isLoggedIn ? "Logged in" : "Not logged in";
+                    loginBtn.innerHTML = `<span class="p-button-icon p-button-icon-left pi pi-${isLoggedIn ? "sign-out" : "user"}"></span><span class="p-button-label">${isLoggedIn ? "Sign Out" : "Sign In"}</span>`;
+                } catch {
+                    statusText.textContent = "Status unknown";
+                }
+            };
+
+            loginBtn.addEventListener("click", async () => {
+                if (isLoggedIn) {
+                    await fetch(logoutEndpoint, { method: "POST" });
+                    await checkStatus();
+                } else {
+                    await browserPopup.start(loginEndpoint, `${service} Login`, checkStatus);
+                }
+            });
+
+            checkStatus();
+            return container;
+        },
+        defaultValue: "",
     };
-    return popup;
 }
 
-// Login popups for each service
-const specterLogin = createLoginPopup("ChatGPT", "/specter/browser/start", "ChatGPT Login");
-const grokLogin = createLoginPopup("Grok", "/specter/grok/browser/start", "Grok Login");
+// Factory for settings button
+function createSettingsButton(id, service) {
+    return {
+        id,
+        category: ["Specter", "Provider Settings", service],
+        name: `${service} Settings`,
+        tooltip: `Open ${service} settings in embedded browser`,
+        type: () => {
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "p-button p-component";
+            btn.innerHTML = `<span class="p-button-icon p-button-icon-left pi pi-cog"></span><span class="p-button-label">Open Settings</span>`;
+            btn.addEventListener("click", () => browserPopup.start(`/specter/${service.toLowerCase()}/settings/start`, `${service} Settings`));
+            return btn;
+        },
+        defaultValue: "",
+    };
+}
 
-// Settings popups (reuse login popup with different title)
-const chatgptSettings = createLoginPopup("ChatGPT", "/specter/chatgpt/settings/start", "ChatGPT Settings");
-const grokSettings = createLoginPopup("Grok", "/specter/grok/settings/start", "Grok Settings");
+// Factory for toggle settings
+function createToggleSetting(id, category, name, tooltip, settingKey, label, defaultValue = false) {
+    return {
+        id, category, name, tooltip,
+        type: () => {
+            const container = document.createElement("div");
+            container.className = "flex items-center gap-4";
 
-// Color scheme - darker headers for light title text visibility
-const SPECTER_COLORS = {
-    // ChatGPT nodes - Dark red
-    chatgpt: {
-        nodeColor: "#991b1b",      // Dark red
-        nodeBgColor: "#2a2a2a",
-    },
-    // Grok nodes - Dark blue
-    grok: {
-        nodeColor: "#1e3a8a",      // Dark blue
-        nodeBgColor: "#2a2a2a",
-    },
-    // Tool nodes - Dark teal
-    tools: {
-        nodeColor: "#065f46",      // Dark teal
-        nodeBgColor: "#2a2a2a",
-    },
-    // Processor nodes - Dark purple
-    processors: {
-        nodeColor: "#5b21b6",      // Dark purple
-        nodeBgColor: "#2a2a2a",
-    },
-};
+            const toggle = document.createElement("input");
+            toggle.type = "checkbox";
+            toggle.style.cssText = "width: 18px; height: 18px; cursor: pointer;";
 
-// Node to color mapping (keys match Specter_{ClassName minus "Node"})
-const NODE_COLORS = {
-    // ChatGPT nodes - Red
-    "Specter_ChatGPTText": SPECTER_COLORS.chatgpt,
-    "Specter_ChatGPTImage": SPECTER_COLORS.chatgpt,
+            const labelEl = document.createElement("span");
+            labelEl.textContent = label;
+            labelEl.style.cssText = "color: var(--fg-color, #ccc);";
 
-    // Grok nodes - Blue
-    "Specter_GrokText": SPECTER_COLORS.grok,
-    "Specter_GrokImage": SPECTER_COLORS.grok,
-    "Specter_GrokImageEdit": SPECTER_COLORS.grok,
-    "Specter_GrokTextToVideo": SPECTER_COLORS.grok,
-    "Specter_GrokImageToVideo": SPECTER_COLORS.grok,
+            container.append(toggle, labelEl);
 
-    // ChatGPT Tool nodes - Red (uses ChatGPT)
-    "Specter_PromptEnhancer": SPECTER_COLORS.chatgpt,
-    "Specter_ImageDescriber": SPECTER_COLORS.chatgpt,
+            fetch("/specter/settings").then(r => r.json()).then(s => {
+                toggle.checked = defaultValue ? s[settingKey] !== false : s[settingKey] || false;
+            }).catch(() => { toggle.checked = defaultValue; });
 
-    // Grok Tool nodes - Blue (uses Grok)
-    "Specter_GrokPromptEnhancer": SPECTER_COLORS.grok,
-    "Specter_GrokImageDescriber": SPECTER_COLORS.grok,
-};
+            toggle.addEventListener("change", () => {
+                fetch("/specter/settings", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ [settingKey]: toggle.checked }),
+                }).catch(e => console.error("[Specter] Failed to save setting:", e));
+            });
+
+            return container;
+        },
+        defaultValue,
+    };
+}
+
+// Get node colors by pattern matching
+function getNodeColors(name) {
+    if (!name.startsWith("Specter_")) return null;
+    const isGrok = name.includes("Grok");
+    return { nodeColor: isGrok ? "#1e3a8a" : "#991b1b", nodeBgColor: "#2a2a2a" };
+}
 
 app.registerExtension({
     name: "Specter.Appearance",
 
-    // Settings for Specter
     settings: [
         {
             id: "Specter.BrowserStatus",
@@ -339,284 +374,32 @@ app.registerExtension({
                 const el = document.createElement("span");
                 el.textContent = "Checking...";
                 el.style.fontWeight = "500";
-                fetch("/specter/health")
-                    .then(r => r.json())
-                    .then(data => {
-                        if (data.ready) {
-                            el.textContent = "✓ Ready";
-                            el.style.color = "#4ade80";
-                        } else {
-                            el.textContent = "⚠ " + (data.error || "Not ready");
-                            el.style.color = "#f87171";
-                        }
-                    })
-                    .catch(() => {
-                        el.textContent = "⚠ Unable to check";
-                        el.style.color = "#fbbf24";
-                    });
+                fetch("/specter/health").then(r => r.json()).then(data => {
+                    el.textContent = data.ready ? "Ready" : "⚠ " + (data.error || "Not ready");
+                    el.style.color = data.ready ? "#4ade80" : "#f87171";
+                }).catch(() => { el.textContent = "⚠ Unable to check"; el.style.color = "#fbbf24"; });
                 return el;
             },
             defaultValue: "",
         },
-        {
-            id: "Specter.LoginButton",
-            category: ["Specter", " Authentication", "ChatGPT"],
-            name: "ChatGPT",
-            tooltip: "Log in to ChatGPT via embedded browser",
-            type: (name, setter, value, attrs) => {
-                const container = document.createElement("div");
-                container.className = "flex items-center gap-4";
-
-                const statusText = document.createElement("span");
-                statusText.className = "text-muted";
-                statusText.textContent = "Checking...";
-
-                const loginBtn = document.createElement("button");
-                loginBtn.type = "button";
-                loginBtn.className = "p-button p-component";
-                loginBtn.style.minWidth = "116px";
-
-                container.append(statusText, loginBtn);
-
-                let isLoggedIn = false;
-
-                const checkStatus = async () => {
-                    try {
-                        const resp = await fetch("/specter/status");
-                        const data = await resp.json();
-                        isLoggedIn = data.logged_in;
-                        statusText.textContent = isLoggedIn ? "Logged in" : "Not logged in";
-                        loginBtn.innerHTML = `<span class="p-button-icon p-button-icon-left pi pi-${isLoggedIn ? "sign-out" : "user"}"></span><span class="p-button-label">${isLoggedIn ? "Sign Out" : "Sign In"}</span>`;
-                    } catch (e) {
-                        statusText.textContent = "Status unknown";
-                    }
-                };
-
-                loginBtn.addEventListener("click", async () => {
-                    if (isLoggedIn) {
-                        await fetch("/specter/logout", { method: "POST" });
-                        await checkStatus();
-                    } else {
-                        await specterLogin.start();
-                    }
-                });
-
-                checkStatus();
-                // Re-check status when login popup closes
-                specterLogin.onClose = checkStatus;
-
-                return container;
-            },
-            defaultValue: "",
-        },
-        {
-            id: "Specter.GrokLoginButton",
-            category: ["Specter", " Authentication", "Grok"],
-            name: "Grok",
-            tooltip: "Log in to Grok via embedded browser",
-            type: (name, setter, value, attrs) => {
-                const container = document.createElement("div");
-                container.className = "flex items-center gap-4";
-
-                const statusText = document.createElement("span");
-                statusText.className = "text-muted";
-                statusText.textContent = "Checking...";
-
-                const loginBtn = document.createElement("button");
-                loginBtn.type = "button";
-                loginBtn.className = "p-button p-component";
-                loginBtn.style.minWidth = "116px";
-
-                container.append(statusText, loginBtn);
-
-                let isLoggedIn = false;
-
-                const checkStatus = async () => {
-                    try {
-                        const resp = await fetch("/specter/grok/status");
-                        const data = await resp.json();
-                        isLoggedIn = data.logged_in;
-                        statusText.textContent = isLoggedIn ? "Logged in" : "Not logged in";
-                        loginBtn.innerHTML = `<span class="p-button-icon p-button-icon-left pi pi-${isLoggedIn ? "sign-out" : "user"}"></span><span class="p-button-label">${isLoggedIn ? "Sign Out" : "Sign In"}</span>`;
-                    } catch (e) {
-                        statusText.textContent = "Status unknown";
-                    }
-                };
-
-                loginBtn.addEventListener("click", async () => {
-                    if (isLoggedIn) {
-                        await fetch("/specter/grok/logout", { method: "POST" });
-                        await checkStatus();
-                    } else {
-                        await grokLogin.start();
-                    }
-                });
-
-                checkStatus();
-                // Re-check status when login popup closes
-                grokLogin.onClose = checkStatus;
-
-                return container;
-            },
-            defaultValue: "",
-        },
-        {
-            id: "Specter.ChatGPTSettings",
-            category: ["Specter", "Provider Settings", "ChatGPT"],
-            name: "ChatGPT Settings",
-            tooltip: "Open ChatGPT settings in embedded browser",
-            type: () => {
-                const btn = document.createElement("button");
-                btn.type = "button";
-                btn.className = "p-button p-component";
-                btn.innerHTML = `<span class="p-button-icon p-button-icon-left pi pi-cog"></span><span class="p-button-label">Open Settings</span>`;
-                btn.addEventListener("click", () => chatgptSettings.start());
-                return btn;
-            },
-            defaultValue: "",
-        },
-        {
-            id: "Specter.GrokSettings",
-            category: ["Specter", "Provider Settings", "Grok"],
-            name: "Grok Settings",
-            tooltip: "Open Grok Imagine settings in embedded browser",
-            type: () => {
-                const btn = document.createElement("button");
-                btn.type = "button";
-                btn.className = "p-button p-component";
-                btn.innerHTML = `<span class="p-button-icon p-button-icon-left pi pi-cog"></span><span class="p-button-label">Open Settings</span>`;
-                btn.addEventListener("click", () => grokSettings.start());
-                return btn;
-            },
-            defaultValue: "",
-        },
-        {
-            id: "Specter.HeadedBrowser",
-            category: ["Specter", "Advanced", "Browser"],
-            name: "Show Browser Window",
-            tooltip: "Run browser visibly for debugging (useful when login or automation fails)",
-            type: (name, setter, value, attrs) => {
-                const container = document.createElement("div");
-                container.className = "flex items-center gap-4";
-
-                const toggle = document.createElement("input");
-                toggle.type = "checkbox";
-                toggle.style.cssText = "width: 18px; height: 18px; cursor: pointer;";
-
-                const label = document.createElement("span");
-                label.textContent = "Enable headed mode";
-                label.style.cssText = "color: var(--fg-color, #ccc);";
-
-                container.append(toggle, label);
-
-                // Load current setting
-                fetch("/specter/settings")
-                    .then(r => r.json())
-                    .then(settings => {
-                        toggle.checked = settings.headed_browser || false;
-                    })
-                    .catch(() => {});
-
-                toggle.addEventListener("change", async () => {
-                    try {
-                        await fetch("/specter/settings", {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ headed_browser: toggle.checked }),
-                        });
-                    } catch (e) {
-                        console.error("[Specter] Failed to save setting:", e);
-                    }
-                });
-
-                return container;
-            },
-            defaultValue: false,
-        },
-        {
-            id: "Specter.DebugDumps",
-            category: ["Specter", "Advanced", "Debugging"],
-            name: "Debug Dumps",
-            tooltip: "Save debug info (screenshots, traces, logs) when errors occur",
-            type: (name, setter, value, attrs) => {
-                const container = document.createElement("div");
-                container.className = "flex items-center gap-4";
-
-                const toggle = document.createElement("input");
-                toggle.type = "checkbox";
-                toggle.style.cssText = "width: 18px; height: 18px; cursor: pointer;";
-
-                const label = document.createElement("span");
-                label.textContent = "Enable debug dumps on error";
-                label.style.cssText = "color: var(--fg-color, #ccc);";
-
-                container.append(toggle, label);
-
-                // Load current setting (default true)
-                fetch("/specter/settings")
-                    .then(r => r.json())
-                    .then(settings => {
-                        toggle.checked = settings.debug_dumps !== false;
-                    })
-                    .catch(() => { toggle.checked = true; });
-
-                toggle.addEventListener("change", async () => {
-                    try {
-                        await fetch("/specter/settings", {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ debug_dumps: toggle.checked }),
-                        });
-                    } catch (e) {
-                        console.error("[Specter] Failed to save setting:", e);
-                    }
-                });
-
-                return container;
-            },
-            defaultValue: true,
-        },
+        createLoginSetting("Specter.LoginButton", "ChatGPT"),
+        createLoginSetting("Specter.GrokLoginButton", "Grok"),
+        createSettingsButton("Specter.ChatGPTSettings", "ChatGPT"),
+        createSettingsButton("Specter.GrokSettings", "Grok"),
+        createToggleSetting("Specter.HeadedBrowser", ["Specter", "Advanced", "Browser"], "Show Browser Window", "Run browser visibly for debugging", "headed_browser", "Enable headed mode"),
+        createToggleSetting("Specter.DebugDumps", ["Specter", "Advanced", "Debugging"], "Debug Dumps", "Save debug info on error", "debug_dumps", "Enable debug dumps on error", true),
     ],
 
-    async beforeRegisterNodeDef(nodeType, nodeData, app) {
-        const colors = NODE_COLORS[nodeData.name];
-        if (!colors) return;
-
-        const origOnNodeCreated = nodeType.prototype.onNodeCreated;
-
-        nodeType.prototype.onNodeCreated = function () {
-            if (origOnNodeCreated) {
-                origOnNodeCreated.apply(this, arguments);
-            }
-
-            // Apply colors
-            this.color = colors.nodeColor;
-            this.bgcolor = colors.nodeBgColor;
-
-            // Ensure minimum width
-            this.size = this.computeSize();
-            this.size[0] = Math.max(this.size[0], 300);
-        };
-    },
-
     async nodeCreated(node) {
-        const colors = NODE_COLORS[node.comfyClass];
+        const colors = getNodeColors(node.comfyClass);
         if (colors) {
             node.color = colors.nodeColor;
             node.bgcolor = colors.nodeBgColor;
+            node.size[0] = Math.max(node.size[0], 300);
         }
     },
 });
 
-// Listen for login required events from backend
-api.addEventListener("specter-login-required", () => {
-    console.log("[Specter] ChatGPT login required - opening authentication popup");
-    specterLogin.start();
-});
-
-api.addEventListener("specter-grok-login-required", () => {
-    console.log("[Specter] Grok login required - opening authentication popup");
-    grokLogin.start();
-});
-
-console.log("[Specter] Appearance extension loaded");
+// Listen for login required events
+api.addEventListener("specter-login-required", () => browserPopup.start("/specter/chatgpt/browser/start", "ChatGPT Login"));
+api.addEventListener("specter-grok-login-required", () => browserPopup.start("/specter/grok/browser/start", "Grok Login"));

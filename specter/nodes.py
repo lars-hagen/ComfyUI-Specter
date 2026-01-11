@@ -1,5 +1,9 @@
 """Specter nodes for ComfyUI."""
 
+import asyncio
+import functools
+
+from .core.browser import log_context
 from .core.config import (
     TOOLTIPS,
     get_image_model,
@@ -10,7 +14,15 @@ from .core.config import (
     get_presets_by_category,
     get_size_resolution,
 )
-from .core.utils import bytes_list_to_tensor, bytes_to_tensor, empty_image_tensor, temp_image
+from .core.utils import (
+    bytes_list_to_tensor,
+    bytes_to_tensor,
+    combine_videos,
+    empty_image_tensor,
+    extract_last_frame_from_video,
+    temp_image,
+    video_to_bytes,
+)
 from .providers.chatgpt import chat_with_gpt
 from .providers.grok import SIZES, VIDEO_MODES, chat_with_grok, imagine_edit, imagine_i2v, imagine_t2i, imagine_t2v
 
@@ -91,7 +103,9 @@ class ChatGPTImageNode:
     RETURN_NAMES = ("image",)
     FUNCTION = "run"
 
-    async def run(self, prompt: str, model: str = "gpt-image-1.5", image=None, size: str = "Auto", preview: bool = False):
+    async def run(
+        self, prompt: str, model: str = "gpt-image-1.5", image=None, size: str = "Auto", preview: bool = False
+    ):
         from comfy.utils import ProgressBar
 
         config = get_image_model("chatgpt", model)
@@ -105,7 +119,9 @@ class ChatGPTImageNode:
 
         with temp_image(image) as image_path:
             pbar = ProgressBar(100)
-            _, image_bytes = await chat_with_gpt(final_prompt, proxy_model, image_path, pbar=pbar, preview=preview, _expect_image=True)
+            _, image_bytes = await chat_with_gpt(
+                final_prompt, proxy_model, image_path, pbar=pbar, preview=preview, _expect_image=True
+            )
             return (bytes_to_tensor(image_bytes) if image_bytes else empty_image_tensor(),)
 
 
@@ -247,8 +263,8 @@ class GrokTextToVideoNode:
             },
         }
 
-    RETURN_TYPES = ("VIDEO",)
-    RETURN_NAMES = ("video",)
+    RETURN_TYPES = ("VIDEO", "IMAGE")
+    RETURN_NAMES = ("video", "last_frame")
     FUNCTION = "run"
 
     async def run(
@@ -267,7 +283,8 @@ class GrokTextToVideoNode:
         video_bytes = await imagine_t2v(prompt, size=size, mode=mode, pbar=pbar, preview=preview)
         if not video_bytes:
             raise RuntimeError("Video generation failed - no video captured")
-        return (VideoFromFile(BytesIO(video_bytes)),)
+        last_frame = extract_last_frame_from_video(video_bytes)
+        return (VideoFromFile(BytesIO(video_bytes)), last_frame)
 
 
 class GrokImageToVideoNode:
@@ -289,8 +306,8 @@ class GrokImageToVideoNode:
             },
         }
 
-    RETURN_TYPES = ("VIDEO",)
-    RETURN_NAMES = ("video",)
+    RETURN_TYPES = ("VIDEO", "IMAGE")
+    RETURN_NAMES = ("video", "last_frame")
     FUNCTION = "run"
 
     async def run(self, image, prompt: str = "", mode: str = "custom", preview: bool = False):
@@ -306,7 +323,8 @@ class GrokImageToVideoNode:
             video_bytes = await imagine_i2v(image_path, prompt=prompt, mode=mode, pbar=pbar, preview=preview)
             if not video_bytes:
                 raise RuntimeError("Video generation failed - no video captured")
-            return (VideoFromFile(BytesIO(video_bytes)),)
+            last_frame = extract_last_frame_from_video(video_bytes)
+            return (VideoFromFile(BytesIO(video_bytes)), last_frame)
 
 
 # =============================================================================
@@ -372,7 +390,9 @@ def _create_prompt_enhancer(provider: str, display_prefix: str, chat_fn, default
             prompt = input_prompt + _TEXT_ONLY_PROMPT_SUFFIX
 
             pbar = ProgressBar(100)
-            response, _ = await chat_fn(prompt, model, None, system_message=system, pbar=pbar, preview=preview)
+            response, _ = await chat_fn(
+                prompt, model, None, system_message=system, pbar=pbar, preview=preview, disable_tools=True
+            )
             return (response,)
 
     return _PromptEnhancerNode
@@ -441,6 +461,37 @@ def _create_image_describer(provider: str, display_prefix: str, chat_fn, default
     return _ImageDescriberNode
 
 
+class GrokVideoCombineNode:
+    """Combine two Grok videos sequentially for extended generation."""
+
+    DISPLAY_NAME = "Grok Video Combine"
+    CATEGORY = "Specter/video/Grok"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "video1": ("VIDEO", {"tooltip": "First video."}),
+                "video2": ("VIDEO", {"tooltip": "Second video (will follow video1)."}),
+            },
+            "optional": {
+                "audio": ("BOOLEAN", {"default": True, "tooltip": "Include audio from both videos."}),
+            },
+        }
+
+    RETURN_TYPES = ("VIDEO",)
+    RETURN_NAMES = ("combined_video",)
+    FUNCTION = "run"
+
+    def run(self, video1, video2, audio: bool = True):
+        from io import BytesIO
+
+        from comfy_api.input_impl import VideoFromFile
+
+        combined_bytes = combine_videos(video_to_bytes(video1), video_to_bytes(video2), audio=audio)
+        return (VideoFromFile(BytesIO(combined_bytes)),)
+
+
 # Generate utility nodes for both providers
 PromptEnhancerNode = _create_prompt_enhancer("chatgpt", "ChatGPT", chat_with_gpt, "gpt-5-2-instant")
 GrokPromptEnhancerNode = _create_prompt_enhancer("grok", "Grok", chat_with_grok, "grok-3")
@@ -451,6 +502,26 @@ GrokImageDescriberNode = _create_image_describer("grok", "Grok", chat_with_grok,
 # =============================================================================
 # NODE REGISTRATION
 # =============================================================================
+
+
+def _wrap_with_context(fn, context_name: str):
+    """Wrap a function to set log context for all logs during execution."""
+    if asyncio.iscoroutinefunction(fn):
+
+        @functools.wraps(fn)
+        async def async_wrapper(*args, **kwargs):
+            with log_context(context_name):
+                return await fn(*args, **kwargs)
+
+        return async_wrapper
+    else:
+
+        @functools.wraps(fn)
+        def sync_wrapper(*args, **kwargs):
+            with log_context(context_name):
+                return fn(*args, **kwargs)
+
+        return sync_wrapper
 
 
 def _register_nodes() -> tuple[dict, dict]:
@@ -467,6 +538,11 @@ def _register_nodes() -> tuple[dict, dict]:
         cls = getattr(module, name)
         if not (hasattr(cls, "DISPLAY_NAME") and hasattr(cls, "CATEGORY") and hasattr(cls, "FUNCTION")):
             continue
+
+        # Wrap run method with log context
+        run_method = getattr(cls, cls.FUNCTION)
+        wrapped = _wrap_with_context(run_method, cls.DISPLAY_NAME)
+        setattr(cls, cls.FUNCTION, wrapped)
 
         key = f"Specter_{name.removesuffix('Node')}"
         class_mappings[key] = cls

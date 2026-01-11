@@ -1,5 +1,3 @@
-"""Specter - Session management for AI web interfaces."""
-
 import asyncio
 import json
 import os
@@ -32,31 +30,18 @@ def save_session(service: str, storage_state: dict):
 
 
 def delete_session(service: str):
-    """Delete session file and persistent browser profile."""
     import shutil
 
-    # Delete session file
     path = get_session_path(service)
     if os.path.exists(path):
         os.unlink(path)
 
-    # Delete persistent Firefox profile
     profile_dir = os.path.join(USER_DATA_DIR, "profiles", f"firefox-{service}")
     if os.path.exists(profile_dir):
         shutil.rmtree(profile_dir, ignore_errors=True)
 
 
 async def handle_login_flow(page, service: str, login_event: str, login_selectors: list[str]):
-    """Handle login flow with popup and polling.
-
-    Opens login popup, waits for user to log in, then injects session.
-
-    Args:
-        page: Playwright page (can be None if browser was closed to release profile lock)
-        service: Service name (e.g., "chatgpt", "grok")
-        login_event: Event name to send to frontend
-        login_selectors: Selectors to check for login buttons
-    """
     from server import PromptServer
 
     from .browser import log
@@ -81,65 +66,11 @@ async def handle_login_flow(page, service: str, login_event: str, login_selector
 
 
 async def is_logged_in(page, login_selectors: list[str]) -> bool:
-    """Check if page shows logged-in state by absence of login buttons."""
     try:
         await page.wait_for_load_state("domcontentloaded")
         for selector in login_selectors:
             if await page.locator(selector).count() > 0:
                 return False
         return True
-    except:
+    except Exception:
         return False
-
-
-async def interactive_login(
-    service: str,
-    login_url: str,
-    login_selectors: list[str],
-    success_url_contains: str,
-    success_url_excludes: str | None = None,
-    workspace_selector: str | None = None,
-):
-    """Open headed browser for user to log in manually."""
-    from playwright.async_api import async_playwright
-
-    print("\n" + "=" * 60)
-    print(f"[Specter] LOGIN REQUIRED - {service.upper()}")
-    print("A browser window will open. Please log in.")
-    print("The window will close automatically once logged in.")
-    print("=" * 60 + "\n")
-
-    async with async_playwright() as p:
-        browser = await p.firefox.launch(headless=False)
-        ctx = await browser.new_context(viewport={"width": 800, "height": 900})
-        page = await ctx.new_page()
-
-        await page.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-        """)
-
-        await page.goto(login_url)
-        await page.wait_for_load_state("domcontentloaded")
-        print("[Specter] Please log in...")
-
-        while True:
-            await asyncio.sleep(1)
-            url = page.url
-
-            url_ok = success_url_contains in url
-            if success_url_excludes:
-                url_ok = url_ok and success_url_excludes not in url
-
-            if url_ok and await is_logged_in(page, login_selectors):
-                if workspace_selector:
-                    if await page.locator(workspace_selector).count() > 0:
-                        continue
-                break
-
-        print("[Specter] Login successful! Saving session...")
-        await asyncio.sleep(2)
-        storage_state = await ctx.storage_state()
-        save_session(service, storage_state)  # type: ignore[arg-type]
-
-        await browser.close()
-        return storage_state

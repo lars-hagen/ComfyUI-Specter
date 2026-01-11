@@ -1,4 +1,4 @@
-"""Grok Imagine - Direct image/video generation via grok.com/imagine."""
+"""Grok Imagine - API-based image/video generation (edit, t2v, i2v)."""
 
 import asyncio
 import json
@@ -12,13 +12,11 @@ from ...core.browser import (
     BrowserSession,
     ProgressTracker,
     log,
-    update_preview,
 )
-from ...core.session import handle_login_flow, is_logged_in
+from ...core.session import is_logged_in
 from .chat import AGE_VERIFICATION_INIT_SCRIPT
 
 # Size presets: name -> (aspect_ratio, t2i_resolution)
-# Edit resolution varies based on input image
 SIZES = {
     "1:1 Square (960x960)": ([1, 1], "960x960"),
     "2:3 Portrait (784x1168)": ([2, 3], "784x1168"),
@@ -33,33 +31,53 @@ LOGIN_SELECTORS = [
     'a[href*="/sign-in"]',
 ]
 
+VIDEO_MODES = {
+    "normal": "normal",
+    "custom": "custom",
+    "fun": "extremely-crazy",
+    "spicy": "extremely-spicy-or-crazy",
+}
 
-def _calc_viewport(size: str, max_images: int) -> dict:
-    """Calculate viewport to fit exactly max_images in single column."""
-    _, res = SIZES.get(size, ([1, 1], "960x960"))
-    w, h = map(int, res.split("x"))
+# Toast detection (rate limit, moderation)
+TOAST_CHECK_JS = """() => {
+    const toasts = Array.from(document.querySelectorAll('li.toast'));
+    for (const toast of toasts) {
+        const text = toast.textContent;
+        if (text.includes('Rate limit reached')) {
+            return { error: 'rate_limit', message: text };
+        }
+        if (text.includes('Content Moderated')) {
+            return { error: 'moderated', message: text };
+        }
+    }
+    return null;
+}"""
 
-    # Force single column with narrow width (below grid breakpoint)
-    vp_width = 500
 
-    # Height = N images (scaled to fit width) + header
-    # Images scale to fit viewport width, so calculate scaled height
-    scale = (vp_width - 40) / w  # 40px for padding
-    scaled_h = int(h * scale)
-    vp_height = (scaled_h * max_images) + 150  # 150 for header/input
+async def _check_rate_limit(page):
+    """Check for error toasts (rate limit, moderation) and raise if detected."""
+    result = await page.evaluate(TOAST_CHECK_JS)
+    if result:
+        if result["error"] == "rate_limit":
+            raise RuntimeError("Grok rate limit reached. Upgrade your account or wait before generating more images.")
+        elif result["error"] == "moderated":
+            raise RuntimeError(f"Content moderated by Grok: {result['message']}")
 
-    return {"width": vp_width, "height": vp_height}
 
+async def _setup_imagine_page(
+    page, size: str, video: bool, mode: str | None = None, block_video: bool = False
+) -> tuple | None:
+    """Set up page for Grok Imagine.
 
-async def _setup_imagine_page(page, size: str, video: bool, mode: str | None = None):
-    """Set up page for Grok Imagine (localStorage, request gate, navigation).
+    Args:
+        block_video: If True, block videoGen until unblock() called
 
-    Returns unblock() function - call before submitting.
+    Returns:
+        (unblock_fn, gate_state) if block_video, else None
     """
     ar, _ = SIZES.get(size, ([1, 1], "960x960"))
     store = {"state": {"imagineMode": "video" if video else "image", "aspectRatio": ar}}
 
-    # Video mode localStorage (only relevant for video)
     ls_mode = "spicy" if mode == "spicy" else "fun"
     video_mode_script = f"localStorage.setItem('grok-video-mode', '\"{ls_mode}\"');" if video else ""
 
@@ -71,308 +89,235 @@ async def _setup_imagine_page(page, size: str, video: bool, mode: str | None = N
 
     await page.add_init_script(init_script)
 
-    # Set up request gate BEFORE navigation to catch any auto-fired requests
-    unblock = await _setup_request_gate(page, mode=mode if video else None)
+    gate_result = None
+    if block_video:
+        gate_result = await _setup_request_gate(page, mode=mode if video else None, block_video=block_video)
 
-    await page.goto("https://grok.com/imagine", timeout=60000, wait_until="commit")
+    await page.goto("https://grok.com/imagine", timeout=60000, wait_until="domcontentloaded")
+
+    # Hide text selection highlight (prevents visual artifacts in screenshots)
+    await page.evaluate("""() => {
+        const style = document.createElement('style');
+        style.textContent = '::selection { background: transparent !important; }';
+        document.head.appendChild(style);
+    }""")
 
     if not await is_logged_in(page, LOGIN_SELECTORS):
-        # CRITICAL: Cannot open login popup while browser holds profile lock
-        # Grok imagine uses BrowserSession context manager, so caller must handle this
-        # by closing session, waiting for login, then reopening
         raise RuntimeError(
             "Not logged in to Grok. Please use the Grok node settings to log in first, "
             "or the BrowserSession must be closed before handle_login_flow can open the popup."
         )
 
-    await page.wait_for_selector('div[contenteditable="true"]', timeout=30000)
-    return unblock
+    # Wait for editor to be hydrated and ready for input
+    await page.wait_for_function(
+        """() => {
+            const editor = document.querySelector('.tiptap');
+            return editor?.isContentEditable && editor.classList.contains('ProseMirror');
+        }""",
+        timeout=30000,
+    )
+
+    return gate_result
 
 
-def _log_image_dimensions(images: list[bytes], expected: str | None = None) -> None:
-    """Log dimensions and size of captured images."""
-    for i, img_data in enumerate(images):
-        try:
-            img = Image.open(BytesIO(img_data))
-            size_kb = len(img_data) // 1024
-            actual = f"{img.width}x{img.height}"
-            if expected:
-                log(f"Image {i + 1}: {actual}, {size_kb}KB (requested: {expected})", "○")
-            else:
-                log(f"Image {i + 1}: {actual}, {size_kb}KB", "○")
-        except Exception:
-            pass
+async def _setup_request_gate(page, mode: str | None = None, block_video: bool = False):
+    """Intercept requests to set enableSideBySide=false and optionally block videoGen until ready.
 
+    Args:
+        mode: Video mode to inject (normal/custom/fun/spicy)
+        block_video: If True, block videoGen until unblock() is called
 
-async def _extract_images_from_dom(page, min_width: int = 500, min_size: int = 80000) -> tuple[list[bytes], str]:
-    """Extract images from DOM - both base64 and assets.grok.com URLs. Returns (images, stats_str)."""
-    import base64
-
-    # Get both base64 data URLs and assets.grok.com generated image URLs
-    img_data = await page.evaluate("""
-        () => {
-            const results = {base64: [], urls: []};
-            document.querySelectorAll('img').forEach(img => {
-                const src = img.src;
-                if (src.startsWith('data:image') && src.length > 1000) {
-                    results.base64.push(src);
-                } else if (src.includes('assets.grok.com') && src.includes('/generated/')) {
-                    results.urls.push(src);
-                }
-            });
-            return results;
-        }
-    """)
-
-    images = []
-    seen = set()
-    all_sizes = []
-
-    # Process base64 images (t2i)
-    for url in img_data.get("base64", []):
-        if ";base64," not in url:
-            continue
-        b64 = url.split(";base64,")[1]
-        data = base64.b64decode(b64)
-        size_kb = len(data) // 1024
-        try:
-            img = Image.open(BytesIO(data))
-            all_sizes.append(f"{img.width}x{img.height}:{size_kb}KB")
-            if len(data) < min_size or img.width < min_width:
-                continue
-        except Exception:
-            continue
-        h = hash(data)
-        if h not in seen:
-            seen.add(h)
-            images.append(data)
-
-    # Process URL images (edit) - fetch using browser context for auth
-    for url in img_data.get("urls", []):
-        try:
-            resp = await page.request.get(url, timeout=10000)
-            if resp.status != 200:
-                continue
-            data = await resp.body()
-            size_kb = len(data) // 1024
-            img = Image.open(BytesIO(data))
-            all_sizes.append(f"{img.width}x{img.height}:{size_kb}KB(url)")
-            if len(data) < min_size or img.width < min_width:
-                continue
-            h = hash(data)
-            if h not in seen:
-                seen.add(h)
-                images.append(data)
-        except Exception:
-            continue
-
-    total = len(img_data.get("base64", [])) + len(img_data.get("urls", []))
-    stats = f"{total} imgs [{', '.join(all_sizes[:6])}] valid: {len(images)}"
-    return images, stats
-
-
-async def _wait_for_images(page, progress: ProgressTracker, max_images: int = 1, timeout: int = 30) -> list[bytes]:
-    """Wait for images to appear in DOM, return up to max_images."""
-    start = time.time()
-    last_log = 0
-    last_preview = 0.0
-
-    while time.time() - start < timeout:
-        images, stats = await _extract_images_from_dom(page)
-        if len(images) >= max_images:
-            await asyncio.sleep(2)  # Let remaining images load
-            final, _ = await _extract_images_from_dom(page)
-            return final[:max_images]
-        await asyncio.sleep(0.5)
-        elapsed = time.time() - start
-
-        # Preview every 3 seconds
-        if progress.preview and elapsed - last_preview >= 3:
-            preview_img = await update_preview(page, height=800)
-            if preview_img:
-                progress.update(progress.current, preview_img)
-            last_preview = elapsed
-
-        # Log every 5 seconds
-        if int(elapsed) >= last_log + 5:
-            log(f"{int(elapsed)}s | {stats}", "◌")
-            last_log = int(elapsed)
-
-    images, _ = await _extract_images_from_dom(page)
-    return images[:max_images]
-
-
-async def _wait_for_video(page, progress: ProgressTracker, captured: list, timeout: int = 120) -> bytes | None:
-    """Wait for video to be captured via network interception."""
-    start = time.time()
-    last_log = 0
-    last_preview = 0.0
-
-    while time.time() - start < timeout:
-        if captured:
-            return captured[-1]
-        await asyncio.sleep(1)
-        elapsed = time.time() - start
-
-        if progress.preview and elapsed - last_preview >= 3:
-            preview_img = await update_preview(page, height=800)
-            if preview_img:
-                progress.update(progress.current, preview_img)
-            last_preview = elapsed
-
-        if int(elapsed) >= last_log + 10:
-            log(f"{int(elapsed)}s | waiting for video...", "◌")
-            last_log = int(elapsed)
-
-        progress.update(min(40 + int(elapsed // 2), 85))
-
-    return captured[-1] if captured else None
-
-
-def _setup_video_capture(page) -> list[bytes]:
-    """Set up video capture handler. Returns list that will be populated with captured videos."""
-    captured: list[bytes] = []
-
-    async def on_response(response):
-        if "assets.grok.com" in response.url and ".mp4" in response.url:
-            try:
-                body = await response.body()
-                if len(body) > 10000:
-                    captured.append(body)
-                    log(f"Captured video ({len(body) // 1024}KB)", "✓")
-            except Exception:
-                pass
-
-    page.on("response", on_response)
-    return captured
-
-
-VIDEO_MODES = {
-    "normal": "normal",
-    "custom": "custom",
-    "fun": "extremely-crazy",
-    "spicy": "extremely-spicy-or-crazy",
-}
-
-
-async def _setup_request_gate(page, mode: str | None = None):
-    """Block conversations/new until ready. Only allows ONE request after unlock.
-
-    Returns unblock() function to call before submitting.
+    Returns (unblock_fn, state) - call unblock() before submitting prompt.
     """
     state = {"ready": False, "allowed": False}
     api_mode = VIDEO_MODES.get(mode, "custom") if mode else None
 
     async def on_route(route):
         request = route.request
-
-        # Block until ready, or if we already allowed one request
-        if not state["ready"] or state["allowed"]:
-            log(f"Blocked: {request.url[-50:]}", "✕")
-            await route.abort()
-            return
-
-        # Allow exactly one request
-        state["allowed"] = True
-        log(f"Allowed: {request.url[-50:]}", "→")
-
-        # Non-POST requests pass through
         if request.method != "POST":
             await route.continue_()
             return
 
-        # Modify request body
         try:
             body = json.loads(request.post_data)
 
-            # Disable side-by-side feedback dialog
+            # Block videoGen until ready
+            if block_video and body.get("toolOverrides", {}).get("videoGen") and not state["ready"]:
+                log("Blocked videoGen (not ready)", "✕")
+                await route.abort()
+                return
+
+            # Allow and intercept
+            state["allowed"] = True
             body["enableSideBySide"] = False
 
-            # Video mode injection
             if api_mode:
                 original_msg = body.get("message", "")
                 msg = re.sub(r"\s*--mode=\S+", "", original_msg)
-                msg = f"{msg.rstrip()}  --mode={api_mode}"
-                body["message"] = msg
-                log(f"Injected mode: {api_mode}", "→")
+                body["message"] = f"{msg.rstrip()}  --mode={api_mode}"
 
             await route.continue_(post_data=json.dumps(body))
         except Exception:
             await route.continue_()
 
     await page.route("**/rest/app-chat/conversations/new", on_route)
-    log("Request gate installed", "○")
+    log(f"Request gate installed{' (blocks videoGen until ready)' if block_video else ''}", "○")
 
     def unblock():
         state["ready"] = True
-        log("Request gate unlocked", "✓")
 
-    return unblock
-
-
-def _log_prompt(prompt: str) -> None:
-    """Log prompt with truncation."""
-    log(f"Prompt: {prompt[:60]}..." if len(prompt) > 60 else f"Prompt: {prompt}", "✎")
+    return unblock, state
 
 
-async def _upload_image(
-    page, image_path: str, file_selector: str = 'input[type="file"]', wait_for_url: str | None = None
-) -> None:
-    """Upload image and wait for completion.
-
-    Args:
-        page: Playwright page
-        image_path: Path to image file
-        file_selector: CSS selector for file input
-        wait_for_url: Optional URL pattern to wait for after upload (e.g. "**/imagine/post/*")
-    """
+async def _upload_image(page, image_path: str, upload_state: dict, file_selector: str = 'input[type="file"]') -> None:
+    """Upload image and wait for API completion."""
     file_input = page.locator(file_selector).first
     await file_input.wait_for(state="attached", timeout=10000)
     await file_input.set_input_files(image_path)
     log("File attached, waiting for upload...", "↑")
 
-    if wait_for_url:
-        await page.wait_for_url(wait_for_url, timeout=30000)
+    upload_start = time.time()
+    while time.time() - upload_start < 30:
+        if upload_state["complete"]:
+            upload_state["complete"] = None
+            log("Image uploaded", "✓")
+            return
+        await asyncio.sleep(0.1)
 
-    log("Image uploaded", "✓")
+    log("Upload timeout - proceeding anyway", "⚠")
 
 
-async def imagine_t2i(
-    prompt: str,
-    size: str = "Square (960x960)",
-    max_images: int = 1,
-    pbar=None,
-    preview: bool = False,
-) -> list[bytes]:
-    """Text-to-image generation."""
-    progress = ProgressTracker(pbar, preview)
-    progress.update(10)
+async def _verify_request_sent(gate_state: dict, error_msg: str, timeout: int = 3) -> None:
+    """Verify request was sent within timeout."""
+    for _ in range(timeout * 10):
+        if gate_state["allowed"]:
+            return
+        await asyncio.sleep(0.1)
+    log(f"No request sent - {error_msg}", "✕")
+    raise Exception(f"No request sent ({error_msg})")
 
-    viewport = _calc_viewport(size, max_images)
 
-    async with BrowserSession("grok", viewport=viewport, error_context="grok-imagine-t2i") as browser:
-        unblock = await _setup_imagine_page(browser.page, size, video=False)
+def _log_image_info(data: bytes, prefix: str = "Extracted") -> None:
+    """Log image dimensions and size."""
+    img = Image.open(BytesIO(data))
+    size_kb = len(data) // 1024
+    log(f"{prefix}: {img.width}x{img.height}, {size_kb}KB", "○")
 
-        _, expected_res = SIZES.get(size, ([1, 1], "960x960"))
-        log(f"Settings: {max_images} images, {expected_res}, viewport {viewport['width']}x{viewport['height']}", "○")
-        _log_prompt(prompt)
-        progress.update(30)
 
-        await browser.page.keyboard.insert_text(prompt)
-        unblock()
-        await browser.page.keyboard.press("Enter")
-        progress.update(40)
+def _setup_response_tracking(page, mode: str, max_images: int = 1):
+    """Set up unified response tracking for uploads, API responses, and video downloads.
 
-        images = await _wait_for_images(browser.page, progress, max_images=max_images)
-        if images:
-            log(f"Generation complete ({len(images)} images)", "✓")
-        else:
-            log("Timeout waiting for images", "⚠")
-            raise Exception("Timeout waiting for images")
+    NOTE: Playwright's page.on("response") fires ONCE when response completes, not progressively.
+    All API progress chunks arrive together at the end.
 
-        _log_image_dimensions(images, expected_res)
-        progress.update(100)
-        return images
+    Args:
+        mode: "video", "image", or "both"
+        max_images: For image mode - number of images to track
+
+    Returns:
+        (captured_videos, video_complete, image_complete, upload_state)
+    """
+    captured_videos: list[bytes] = []
+    upload_state = {"complete": None}
+    video_complete = {"done": False}
+    image_complete = {"done": False, "urls": []}
+
+    async def on_response(response):
+        url = response.url
+
+        # Track uploads
+        if "/rest/app-chat/upload-file" in url:
+            try:
+                body = await response.json()
+                if "fileMetadataId" in body:
+                    upload_state["complete"] = body
+                    log(f"Upload complete: {body['fileMetadataId']}", "✓")
+            except:
+                pass
+            return
+
+        # Track video downloads
+        if mode in ("video", "both") and "assets.grok.com" in url and ".mp4" in url:
+            try:
+                body = await response.body()
+                if len(body) > 10000:
+                    captured_videos.append(body)
+                    log(f"Captured video ({len(body) // 1024}KB)", "✓")
+            except:
+                pass
+            return
+
+        # Parse API response for completion
+        if "/rest/app-chat/conversations/new" in url and response.status == 200:
+            try:
+                text = await response.text()
+                for line in text.split("\n"):
+                    if not line.strip():
+                        continue
+                    try:
+                        body = json.loads(line)
+                        resp = body.get("result", {}).get("response", {})
+
+                        # Check video completion
+                        if mode in ("video", "both"):
+                            video_gen = resp.get("streamingVideoGenerationResponse", {})
+                            if video_gen and video_gen.get("progress") == 100:
+                                video_complete["done"] = True
+
+                        # Check image completion
+                        if mode == "image":
+                            img_gen = resp.get("streamingImageGenerationResponse", {})
+                            if img_gen and img_gen.get("progress") == 100:
+                                url = img_gen.get("imageUrl", "")
+                                if url and url not in image_complete["urls"]:
+                                    image_complete["urls"].append(url)
+                                if len(image_complete["urls"]) >= max_images:
+                                    image_complete["done"] = True
+                    except json.JSONDecodeError:
+                        pass
+            except:
+                pass
+
+    page.on("response", on_response)
+    return captured_videos, video_complete, image_complete, upload_state
+
+
+async def _wait_for_video(captured: list[bytes], browser, progress: ProgressTracker, timeout: int = 60) -> bytes:
+    """Wait for video to be captured via network interception (timeout in seconds)."""
+    start = time.time()
+    last_preview = 0
+
+    while time.time() - start < timeout:
+        if captured:
+            return captured[-1]
+
+        elapsed = time.time() - start
+        if elapsed - last_preview >= 3:
+            await browser.update_preview_if_enabled(progress)
+            last_preview = elapsed
+
+        await asyncio.sleep(1)
+
+    raise Exception("Timeout waiting for video")
+
+
+async def _wait_for_images(image_state: dict, browser, progress: ProgressTracker, timeout: int = 40) -> list[str]:
+    """Wait for images via API response (timeout in seconds)."""
+    start = time.time()
+    last_preview = 0
+
+    while time.time() - start < timeout:
+        if image_state["done"]:
+            return image_state["urls"]
+
+        elapsed = time.time() - start
+        if elapsed - last_preview >= 3:
+            await browser.update_preview_if_enabled(progress)
+            last_preview = elapsed
+
+        await asyncio.sleep(1)
+
+    raise Exception("Timeout waiting for images")
 
 
 async def imagine_edit(
@@ -387,15 +332,17 @@ async def imagine_edit(
     progress.update(10)
 
     async with BrowserSession("grok", error_context="grok-imagine-edit") as browser:
-        unblock = await _setup_imagine_page(browser.page, "1:1 Square (960x960)", video=False)
+        gate_result = await _setup_imagine_page(browser.page, "1:1 Square (960x960)", video=False, block_video=True)
+        assert gate_result is not None
+        unblock, gate_state = gate_result
+        _, _, image_state, upload_state = _setup_response_tracking(browser.page, mode="image", max_images=max_images)
 
         log(f"Settings: {max_images} images", "○")
         log(f"Uploading: {image_path}", "↑")
         progress.update(20)
 
-        await _upload_image(browser.page, image_path, file_selector='input[type="file"][accept*="image"]')
+        await _upload_image(browser.page, image_path, upload_state, file_selector='input[type="file"][accept*="image"]')
 
-        # Wait for Edit image button
         edit_btn = browser.page.locator('button:has-text("Edit image")').first
         await edit_btn.wait_for(state="visible", timeout=30000)
         await edit_btn.click()
@@ -403,21 +350,47 @@ async def imagine_edit(
         progress.update(30)
 
         edit_prompt = prompt or "Edit this image"
-        _log_prompt(edit_prompt)
+        log(f"Prompt: {edit_prompt[:60]}..." if len(edit_prompt) > 60 else f"Prompt: {edit_prompt}", "✎")
+        unblock()
         textarea = browser.page.locator('textarea[placeholder*="edit image" i]')
         await textarea.fill(edit_prompt)
-        unblock()
         await textarea.press("Enter")
+
+        await _verify_request_sent(gate_state, "textarea not found or Enter failed")
+        log("Edit request sent", "✓")
         progress.update(40)
 
-        images = await _wait_for_images(browser.page, progress, max_images=max_images)
-        if images:
-            log(f"Edit complete ({len(images)} images)", "✓")
-        else:
-            log("Timeout waiting for images", "⚠")
-            raise Exception("Timeout waiting for images")
+        await _check_rate_limit(browser.page)
 
-        _log_image_dimensions(images)
+        # Wait for images from API
+        image_urls = await _wait_for_images(image_state, browser, progress, timeout=40)
+        progress.update(90)
+
+        # Download images from URLs (respect max_images limit)
+        images = []
+        urls_to_download = image_urls[:max_images]
+        for idx, url in enumerate(urls_to_download):
+            # Prepend base URL if relative
+            full_url = f"https://assets.grok.com/{url}" if not url.startswith("http") else url
+            try:
+                resp = await browser.page.request.get(full_url, timeout=10000)
+                if resp.status == 200:
+                    img_data = await resp.body()
+                    _log_image_info(img_data, f"Image {idx + 1}")
+                    images.append(img_data)
+            except Exception as e:
+                log(f"Failed to download image {idx + 1}: {e}", "✕")
+                continue
+
+        if not images:
+            raise Exception("Failed to download images from API URLs")
+
+        log(f"Edit complete ({len(images)} images)", "✓")
+        for i, img_data in enumerate(images):
+            try:
+                _log_image_info(img_data, f"Image {i + 1}")
+            except Exception:
+                pass
         progress.update(100)
         return images
 
@@ -434,27 +407,29 @@ async def imagine_t2v(
     progress.update(10)
 
     async with BrowserSession("grok", error_context="grok-imagine-t2v") as browser:
-        unblock = await _setup_imagine_page(browser.page, size, video=True, mode=mode)
-        captured = _setup_video_capture(browser.page)
+        gate_result = await _setup_imagine_page(browser.page, size, video=True, mode=mode, block_video=True)
+        assert gate_result is not None
+        unblock, gate_state = gate_result
+        captured, _, _, _ = _setup_response_tracking(browser.page, mode="video")
 
         _, expected_res = SIZES.get(size, ([1, 1], "960x960"))
         log(f"Settings: {expected_res}, mode={mode}", "○")
-        _log_prompt(prompt)
+        log(f"Prompt: {prompt[:60]}..." if len(prompt) > 60 else f"Prompt: {prompt}", "✎")
         progress.update(30)
 
-        await browser.page.keyboard.insert_text(prompt)
         unblock()
+        await browser.page.keyboard.insert_text(prompt)
         await browser.page.keyboard.press("Enter")
+
+        await _verify_request_sent(gate_state, "textarea not found or Enter failed")
+        log("Video generation started", "✓")
         progress.update(40)
 
-        video = await _wait_for_video(browser.page, progress, captured)
-        if video:
-            log(f"Video complete ({len(video) // 1024}KB, requested: {expected_res})", "✓")
-            progress.update(100)
-            return video
-
-        log("Timeout waiting for video", "⚠")
-        raise Exception("Timeout waiting for video")
+        video = await _wait_for_video(captured, browser, progress)
+        size_kb = len(video) // 1024
+        log(f"Video complete ({size_kb}KB, requested: {expected_res})", "✓")
+        progress.update(100)
+        return video
 
 
 async def imagine_i2v(
@@ -469,32 +444,35 @@ async def imagine_i2v(
     progress.update(10)
 
     async with BrowserSession("grok", error_context="grok-imagine-i2v") as browser:
-        unblock = await _setup_imagine_page(browser.page, "1:1 Square (960x960)", video=True, mode=mode)
-        captured = _setup_video_capture(browser.page)
+        gate_result = await _setup_imagine_page(
+            browser.page, "1:1 Square (960x960)", video=True, mode=mode, block_video=True
+        )
+        assert gate_result is not None
+        unblock, gate_state = gate_result
+        captured, _, _, upload_state = _setup_response_tracking(browser.page, mode="both")
 
         log(f"Settings: mode={mode} (size follows input image)", "○")
         log(f"Uploading: {image_path}", "↑")
         progress.update(20)
 
-        await _upload_image(browser.page, image_path, wait_for_url="**/imagine/post/*")
+        await _upload_image(browser.page, image_path, upload_state)
         progress.update(30)
 
         textarea = browser.page.locator('textarea[placeholder*="customize video"]')
         await textarea.wait_for(state="visible", timeout=10000)
 
+        unblock()
         if prompt:
             await textarea.fill(prompt)
-            _log_prompt(prompt)
-        unblock()
+            log(f"Prompt: {prompt[:60]}..." if len(prompt) > 60 else f"Prompt: {prompt}", "✎")
         await textarea.press("Enter")
+
+        await _verify_request_sent(gate_state, "textarea not found or Enter failed")
         log("Video generation started", "✓")
         progress.update(40)
 
-        video = await _wait_for_video(browser.page, progress, captured)
-        if video:
-            log(f"Video complete ({len(video) // 1024}KB)", "✓")
-            progress.update(100)
-            return video
-
-        log("Timeout waiting for video", "⚠")
-        raise Exception("Timeout waiting for video")
+        video = await _wait_for_video(captured, browser, progress)
+        size_kb = len(video) // 1024
+        log(f"Video complete ({size_kb}KB)", "✓")
+        progress.update(100)
+        return video

@@ -4,9 +4,9 @@
 [![ComfyUI](https://img.shields.io/badge/ComfyUI-Custom_Node-blue)](https://github.com/comfyanonymous/ComfyUI)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 
-**Use ChatGPT's image generation and GPT models in ComfyUI, completely free.** No API keys, no per-image costs. Just your existing ChatGPT account (even free tier works).
+**Use ChatGPT and Grok in ComfyUI, completely free.** No API keys, no per-image costs. Just your existing accounts (even free tiers work).
 
-*Specter is a stealthy browser phantom that automates ChatGPT's web interface in the background. Headless and invisible.*
+*Specter is a stealthy browser phantom that automates web interfaces in the background. Headless and invisible.*
 
 ![demo](demo.jpg)
 
@@ -18,23 +18,45 @@ https://github.com/user-attachments/assets/ffbe5846-24ae-4c7c-a393-4b504e196287
 flowchart LR
     A[ComfyUI Workflow] --> B[Specter Node]
     B --> C[Firefox Browser]
-    C --> D[ChatGPT Web UI]
-    D --> E[Generated Image]
-    E --> A
+    C --> D{Provider}
+    D --> E[ChatGPT]
+    D --> F[Grok]
+    E --> G[Generated Content]
+    F --> G
+    G --> A
 
-    C -.-> F[(Session Storage)]
-    F -.-> C
+    C -.-> H[(Session Storage)]
+    H -.-> C
 ```
 
 ## Why Specter?
 
 | | API | Specter (Web UI) |
 |---|---|---|
-| **Image Generation** | $0.19/image | **FREE** (with any tier) |
-| **GPT-5.2** | $2.50/1M tokens | **Included in subscription** |
-| **o3 Reasoning** | $10-20/1M tokens | **Included in Plus/Pro** |
+| **ChatGPT Image** | $0.19/image | **FREE** |
+| **GPT-5.2** | $2.50/1M tokens | **Included** |
+| **Grok Image** | Not available | **FREE** |
+| **Grok Video** | Not available | **FREE** |
 
 ## Installation
+
+### Windows
+
+1. Clone to your ComfyUI `custom_nodes` folder:
+   ```cmd
+   cd ComfyUI\custom_nodes
+   git clone https://github.com/lars-hagen/ComfyUI-Specter.git
+   ```
+
+2. Install dependencies:
+   ```cmd
+   cd ComfyUI-Specter
+   pip install -r requirements.txt
+   ```
+
+3. Restart ComfyUI
+
+### macOS / Linux
 
 1. Clone to your ComfyUI `custom_nodes` folder:
    ```bash
@@ -52,21 +74,37 @@ flowchart LR
 
 3. Restart ComfyUI
 
-4. **Authenticate with ChatGPT** (choose one):
-   - **Automatic:** Just run any Specter node - a login popup appears if needed
-   - **Manual:** Go to Settings > Specter > Authentication > Sign In
+### Authentication
 
-   Session saves automatically for future use.
+After installation, authenticate with your accounts (choose one method):
+- **Automatic:** Run any Specter node - a login popup appears if needed
+- **Manual:** Go to Settings > Specter > Authentication > Sign In
+
+Sessions save automatically for future use.
 
 ## Nodes
 
-| Node | Category | Description |
-|------|----------|-------------|
-| **ChatGPT Multimodal** | Specter | Full-featured node with text + image input/output |
-| **ChatGPT Image** | Specter/Core | Optimized for image generation (uses gpt-image-1.5) |
-| **ChatGPT Text** | Specter/Core | Text-only responses, faster for text tasks |
-| **Prompt Enhancer** | Specter/Tools | Enhance basic prompts for better image results |
-| **Image Describer** | Specter/Tools | Generate detailed descriptions from images |
+### ChatGPT
+
+| Node | Description |
+|------|-------------|
+| **ChatGPT Text** | Text chat with GPT models |
+| **ChatGPT Image** | Image generation with gpt-image-1.5 |
+| **ChatGPT Prompt Enhancer** | Enhance prompts for better image results |
+| **ChatGPT Image Describer** | Generate descriptions from images |
+
+### Grok
+
+| Node | Description |
+|------|-------------|
+| **Grok Text** | Text chat with Grok models |
+| **Grok Image** | Text-to-image generation |
+| **Grok Image Edit** | Image-to-image editing |
+| **Grok Text to Video** | Text-to-video generation |
+| **Grok Image to Video** | Image-to-video generation |
+| **Grok Video Combine** | Combine videos sequentially |
+| **Grok Prompt Enhancer** | Enhance prompts for better results |
+| **Grok Image Describer** | Generate descriptions from images |
 
 ## Example Workflows
 
@@ -98,28 +136,11 @@ Generate detailed descriptions from images.
 
 [Download workflow](example_workflows/image_describer.json)
 
-## Image Capabilities (gpt-image-1.5)
+## Rate Limits
 
-**Generation**
-- Text-to-Image
-- Image editing (img2img)
-- Text rendering in images (posters, infographics)
+Usage depends on your subscription tier.
 
-**Editing**
-- Inpainting
-- Object add/remove
-- Background replacement
-- Style transfer
-- Clothing/appearance changes
-
-**Preservation**
-- Facial likeness consistency
-- Lighting/composition matching
-- Color tone preservation
-
-## ChatGPT Rate Limits
-
-Usage depends on your existing ChatGPT subscription tier:
+### ChatGPT
 
 | Model | Free | Plus | Pro |
 |-------|------|------|-----|
@@ -127,6 +148,14 @@ Usage depends on your existing ChatGPT subscription tier:
 | **gpt-5.2** | 10/5hr | 160/3hr | Unlimited |
 | **gpt-5.2-instant** | Fallback | Full | Unlimited |
 | **o3** | - | 100/week | Unlimited |
+
+### Grok
+
+| Feature | Free | Premium | SuperGrok |
+|---------|------|---------|-----------|
+| **Image** | Limited | Higher | Unlimited |
+| **Video** | Limited | Higher | Unlimited |
+| **Text** | Limited | Higher | Unlimited |
 
 ## Troubleshooting
 
