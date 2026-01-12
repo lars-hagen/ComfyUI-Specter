@@ -215,8 +215,7 @@ const browserPopup = {
         this.ws.onmessage = async (e) => {
             if (typeof e.data === "string") {
                 if (JSON.parse(e.data).type === "logged_in") {
-                    this.showSuccess();
-                    setTimeout(() => this.stop(), 1200);
+                    this.stop();
                 }
                 return;
             }
