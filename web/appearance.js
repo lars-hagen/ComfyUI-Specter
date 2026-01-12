@@ -267,7 +267,13 @@ function createLoginSetting(id, service) {
             loginBtn.className = "p-button p-component";
             loginBtn.style.minWidth = "116px";
 
-            container.append(statusText, loginBtn);
+            const clearBtn = document.createElement("button");
+            clearBtn.type = "button";
+            clearBtn.className = "pi pi-trash";
+            clearBtn.title = "Clear saved session and browser profile data";
+            clearBtn.style.cssText = "background: none; border: none; color: var(--p-text-muted-color, #888); cursor: pointer; font-size: 14px; padding: 4px;";
+
+            container.append(statusText, clearBtn, loginBtn);
 
             let isLoggedIn = false;
 
@@ -289,6 +295,11 @@ function createLoginSetting(id, service) {
                 } else {
                     await browserPopup.start(loginEndpoint, `${service} Login`, checkStatus);
                 }
+            });
+
+            clearBtn.addEventListener("click", async () => {
+                await fetch(logoutEndpoint, { method: "POST" });
+                await checkStatus();
             });
 
             checkStatus();

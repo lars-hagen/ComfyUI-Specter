@@ -6,7 +6,7 @@ from server import PromptServer
 from .browser import browser_stream
 from .core.browser import check_browser_health, log
 from .core.debug import load_settings, save_settings
-from .core.session import delete_session, load_session, save_session
+from .core.session import delete_session, has_data, load_session, save_session
 from .providers.chatgpt import ChatGPTService
 from .providers.grok import GrokService
 
@@ -77,15 +77,21 @@ async def health(_request):
 async def get_service_status(request):
     service = request.match_info["service"]
     session = load_session(service)
-    has_session = session is not None and len(session.get("cookies", [])) > 0
-    return web.json_response({"logged_in": has_session})
+    logged_in = session is not None and len(session.get("cookies", [])) > 0
+    data_status = has_data(service)
+    return web.json_response({
+        "logged_in": logged_in,
+        "has_data": data_status["has_session"] or data_status["has_profile"],
+    })
 
 
 @PromptServer.instance.routes.post("/specter/{service}/logout")
 async def trigger_service_logout(request):
     service = request.match_info["service"]
-    delete_session(service)
-    return web.json_response({"status": "ok"})
+    result = delete_session(service)
+    if result["errors"]:
+        return web.json_response({"status": "partial", "deleted": result, "message": "; ".join(result["errors"])})
+    return web.json_response({"status": "ok", "deleted": result})
 
 
 @PromptServer.instance.routes.post("/specter/{service}/browser/start")
