@@ -4,7 +4,7 @@
 [![ComfyUI](https://img.shields.io/badge/ComfyUI-Custom_Node-blue)](https://github.com/comfyanonymous/ComfyUI)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 
-**Use ChatGPT and Grok in ComfyUI, completely free.** No API keys, no per-image costs. Just your existing accounts (even free tiers work).
+**Use ChatGPT and Grok in ComfyUI.** No API keys, no extra costs. Just your existing accounts (even free tiers work).
 
 *Specter is a stealthy browser phantom that automates web interfaces in the background. Headless and invisible.*
 
@@ -31,12 +31,14 @@ flowchart LR
 
 ## Why Specter?
 
-| | API | Specter (Web UI) |
+Already paying for ChatGPT Plus/Pro or X Premium? Use those features in ComfyUI without extra API costs.
+
+| | API | Your Existing Subscription |
 |---|---|---|
-| **ChatGPT Image** | $0.19/image | **FREE** |
-| **GPT-5.2** | $2.50/1M tokens | **Included** |
-| **Grok Image** | Not available | **FREE** |
-| **Grok Video** | Not available | **FREE** |
+| **ChatGPT Image** | ~$0.05/image | Included |
+| **GPT-5.2** | $0.88-7/1M tokens | Included |
+| **Grok Image** | $0.01/image | Included |
+| **Grok Video** | No API | Included |
 
 ## Installation
 
@@ -138,24 +140,12 @@ Generate detailed descriptions from images.
 
 ## Rate Limits
 
-Usage depends on your subscription tier.
-
-### ChatGPT
-
-| Model | Free | Plus | Pro |
-|-------|------|------|-----|
-| **gpt-image-1.5** | 2-3/day | 50/3hr | Unlimited |
-| **gpt-5.2** | 10/5hr | 160/3hr | Unlimited |
-| **gpt-5.2-instant** | Fallback | Full | Unlimited |
-| **o3** | - | 100/week | Unlimited |
-
-### Grok
-
-| Feature | Free | Premium | SuperGrok |
-|---------|------|---------|-----------|
-| **Image** | Limited | Higher | Unlimited |
-| **Video** | Limited | Higher | Unlimited |
-| **Text** | Limited | Higher | Unlimited |
+| | Free | Plus/Premium | Pro/SuperGrok |
+|---|---|---|---|
+| **ChatGPT Image** | ~3/day | ~50/3hr | Unlimited |
+| **ChatGPT Text** | Limited | ~80/3hr | Unlimited |
+| **Grok Image** | ~20/day | 100/day | 200/day |
+| **Grok Video** | ~20/day | 100/day | 200/day |
 
 ## Troubleshooting
 
