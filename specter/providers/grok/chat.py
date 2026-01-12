@@ -93,7 +93,12 @@ class GrokService(ChatService):
 
         # Inject system message via customPersonality
         if system_message:
-            log(f"Intercepting request: customPersonality = '{system_message[:40]}...'", "⟳")
+            log(f"Intercepting request: customPersonality = '{system_message[:40]}...')", "⟳")
+            # Full system message in debug mode
+            from ...core.debug import is_debug_logging_enabled
+
+            if is_debug_logging_enabled():
+                log(f"Full system message:\n{system_message}", "◆")
             body["customPersonality"] = system_message
             modified = True
 

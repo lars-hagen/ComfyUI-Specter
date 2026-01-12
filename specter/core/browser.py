@@ -12,7 +12,7 @@ from typing import Any
 from PIL import Image
 from playwright.async_api import async_playwright
 
-from .debug import cleanup_old_dumps, is_debug_dumps_enabled, is_headed_mode
+from .debug import cleanup_old_dumps, is_debug_dumps_enabled, is_debug_logging_enabled, is_headed_mode, is_trace_enabled
 from .session import load_session
 
 # Track if we've already checked/installed Firefox this session
@@ -79,6 +79,12 @@ def log(msg, symbol="▸"):
     ctx = _log_context.get()
     ctx_str = f" {ctx}:" if ctx else ""
     print(f"[Specter {ts}]{ctx_str} {symbol} {msg}")
+
+
+def debug_log(msg, symbol="⌘"):
+    """Log only when SPECTER_DEBUG=1 is set."""
+    if is_debug_logging_enabled():
+        log(msg, symbol)
 
 
 def _run_browser_check() -> tuple[bool, str | None]:
@@ -371,8 +377,7 @@ async def close_browser(playwright, context, browser=None):
         try:
             # Only handle tracing if debug dumps are enabled
             if is_debug_dumps_enabled():
-                # Save trace if SPECTER_TRACE env var is set
-                if os.getenv("SPECTER_TRACE", "").lower() in ("1", "true", "yes"):
+                if is_trace_enabled():
                     from .debug import DEBUG_DIR
 
                     now = datetime.now()

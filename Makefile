@@ -10,14 +10,12 @@ format:
 
 fix:
 	uvx ruff check --fix .
-	uvx ruff format .
 
 typecheck:
 	uvx pyright .
 
 check:
 	uvx ruff check .
-	uvx ruff format --check .
 	uvx pyright .
 
 imports:

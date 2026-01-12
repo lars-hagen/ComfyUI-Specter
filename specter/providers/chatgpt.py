@@ -70,6 +70,11 @@ class ChatGPTService(ChatService):
             }
             body["messages"].insert(0, system_msg)
             log(f"Intercepting request: messages[0] = system('{system_message[:40]}...')", "⟳")
+            # Full system message in debug mode
+            from ..core.debug import is_debug_logging_enabled
+
+            if is_debug_logging_enabled():
+                log(f"Full system message:\n{system_message}", "◆")
             modified = True
 
         return modified

@@ -68,7 +68,7 @@ class ChatService(ABC):
         This is the template method that orchestrates the chat flow.
         Retries once if no results returned but no error occurred.
         """
-        max_retries = 2
+        max_retries = 3
         last_result = ("", None)
         for attempt in range(1, max_retries + 1):
             try:
@@ -84,8 +84,12 @@ class ChatService(ABC):
                     continue
             except (asyncio.CancelledError, KeyboardInterrupt):
                 raise
-            except Exception:
-                # Got an actual error - don't retry, just raise
+            except Exception as e:
+                # Retry on 429 (heavy load)
+                if "API error 429" in str(e) and attempt < max_retries:
+                    log(f"Rate limited (429) - retrying in 2s (attempt {attempt + 1}/{max_retries})", "⟳")
+                    await asyncio.sleep(2)
+                    continue
                 raise
         return last_result
 
@@ -290,6 +294,13 @@ class ChatService(ABC):
             # Check for API error first
             if self.api_error:
                 break
+
+            # Check for hard rate limit (quota exceeded - don't retry)
+            if await self.page.locator("text=You've reached your current limit").count() > 0:
+                from ..core.exceptions import RateLimitException
+
+                log("Rate limit reached - quota exceeded", "✕")
+                raise RateLimitException(self.config.service_name)
 
             # API completion signal (set by _handle_response)
             if self.api_completion:

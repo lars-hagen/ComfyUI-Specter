@@ -11,6 +11,7 @@ from PIL import Image
 from ...core.browser import (
     BrowserSession,
     ProgressTracker,
+    debug_log,
     log,
 )
 from ...core.session import handle_login_flow
@@ -37,8 +38,9 @@ VIDEO_MODES = {
     "spicy": "extremely-spicy-or-crazy",
 }
 
-# Toast detection (rate limit, moderation)
-TOAST_CHECK_JS = """() => {
+# Error detection (rate limit, moderation) - checks toasts and overlay messages
+ERROR_CHECK_JS = """() => {
+    // Check toasts
     const toasts = Array.from(document.querySelectorAll('li.toast'));
     for (const toast of toasts) {
         const text = toast.textContent;
@@ -49,13 +51,18 @@ TOAST_CHECK_JS = """() => {
             return { error: 'moderated', message: text };
         }
     }
+    // Check for moderation overlay on image/video (appears as text on the preview)
+    const pageText = document.body.innerText;
+    if (pageText.includes('Content Moderated')) {
+        return { error: 'moderated', message: 'Content Moderated. Try a different idea.' };
+    }
     return null;
 }"""
 
 
-async def _check_rate_limit(page):
-    """Check for error toasts (rate limit, moderation) and raise if detected."""
-    result = await page.evaluate(TOAST_CHECK_JS)
+async def _check_errors(page):
+    """Check for errors (rate limit, moderation) and raise if detected."""
+    result = await page.evaluate(ERROR_CHECK_JS)
     if result:
         if result["error"] == "rate_limit":
             raise RuntimeError("Grok rate limit reached. Upgrade your account or wait before generating more images.")
@@ -64,16 +71,15 @@ async def _check_rate_limit(page):
 
 
 async def _setup_imagine_page(
-    browser: BrowserSession, size: str, video: bool, mode: str | None = None, block_video: bool = False
-) -> tuple | None:
+    browser: BrowserSession, size: str, video: bool, mode: str | None = None
+) -> tuple:
     """Set up page for Grok Imagine.
 
     Args:
         browser: BrowserSession instance (handles login flow if needed)
-        block_video: If True, block videoGen until unblock() called
 
     Returns:
-        (unblock_fn, gate_state) if block_video, else None
+        (unblock_fn, gate_state) - call unblock() right before submitting.
     """
     ar, _ = SIZES.get(size, ([1, 1], "960x960"))
     store = {"state": {"imagineMode": "video" if video else "image", "aspectRatio": ar}}
@@ -92,9 +98,7 @@ async def _setup_imagine_page(
         page = browser.page
         await page.add_init_script(init_script)
 
-        gate_result = None
-        if block_video:
-            gate_result = await _setup_request_gate(page, mode=mode if video else None, block_video=block_video)
+        gate_result = await _setup_request_gate(page, mode=mode if video else None, allow_video=video)
 
         await page.goto("https://grok.com/imagine", timeout=60000, wait_until="domcontentloaded")
 
@@ -147,14 +151,14 @@ async def _setup_imagine_page(
     return gate_result
 
 
-async def _setup_request_gate(page, mode: str | None = None, block_video: bool = False):
-    """Intercept requests to set enableSideBySide=false and optionally block videoGen until ready.
+async def _setup_request_gate(page, mode: str | None = None, allow_video: bool = True):
+    """Block all generation requests until unblock() is called.
 
     Args:
         mode: Video mode to inject (normal/custom/fun/spicy)
-        block_video: If True, block videoGen until unblock() is called
+        allow_video: If False, always block videoGen requests (for image edit)
 
-    Returns (unblock_fn, state) - call unblock() before submitting prompt.
+    Returns (unblock_fn, state) - call unblock() right before submitting.
     """
     state = {"ready": False, "allowed": False}
     api_mode = VIDEO_MODES.get(mode, "custom") if mode else None
@@ -167,10 +171,26 @@ async def _setup_request_gate(page, mode: str | None = None, block_video: bool =
 
         try:
             body = json.loads(request.post_data)
+            is_video_request = body.get("toolOverrides", {}).get("videoGen")
 
-            # Block videoGen until ready
-            if block_video and body.get("toolOverrides", {}).get("videoGen") and not state["ready"]:
-                log("Blocked videoGen (not ready)", "✕")
+            # Block ALL requests until ready
+            if not state["ready"]:
+                debug_log(f"Blocked request (not ready): {json.dumps(body, indent=2)}")
+                log("Blocked premature request", "✕")
+                await route.abort()
+                return
+
+            # Always block videoGen if not allowed (image edit mode)
+            if is_video_request and not allow_video:
+                debug_log(f"Blocked videoGen request: {json.dumps(body, indent=2)}")
+                log("Blocked videoGen request", "✕")
+                await route.abort()
+                return
+
+            # Only allow ONE request - block any subsequent ones
+            if state["allowed"]:
+                debug_log(f"Blocked duplicate request: {json.dumps(body, indent=2)}")
+                log("Blocked duplicate request", "✕")
                 await route.abort()
                 return
 
@@ -183,12 +203,14 @@ async def _setup_request_gate(page, mode: str | None = None, block_video: bool =
                 msg = re.sub(r"\s*--mode=\S+", "", original_msg)
                 body["message"] = f"{msg.rstrip()}  --mode={api_mode}"
 
+            debug_log(f"Allowed request: {json.dumps(body, indent=2)}")
+            log("Allowed request", "✓")
             await route.continue_(post_data=json.dumps(body))
         except Exception:
             await route.continue_()
 
     await page.route("**/rest/app-chat/conversations/new", on_route)
-    log(f"Request gate installed{' (blocks videoGen until ready)' if block_video else ''}", "○")
+    log("Request gate installed", "○")
 
     def unblock():
         state["ready"] = True
@@ -313,12 +335,19 @@ async def _wait_for_video(captured: list[bytes], browser, progress: ProgressTrac
     """Wait for video to be captured via network interception (timeout in seconds)."""
     start = time.time()
     last_preview = 0
+    last_error_check = 0
 
     while time.time() - start < timeout:
         if captured:
             return captured[-1]
 
         elapsed = time.time() - start
+
+        # Check for errors (moderation, rate limit) every 3 seconds
+        if elapsed - last_error_check >= 3:
+            await _check_errors(browser.page)
+            last_error_check = elapsed
+
         if elapsed - last_preview >= 3:
             await browser.update_preview_if_enabled(progress)
             last_preview = elapsed
@@ -332,12 +361,19 @@ async def _wait_for_images(image_state: dict, browser, progress: ProgressTracker
     """Wait for images via API response (timeout in seconds)."""
     start = time.time()
     last_preview = 0
+    last_error_check = 0
 
     while time.time() - start < timeout:
         if image_state["done"]:
             return image_state["urls"]
 
         elapsed = time.time() - start
+
+        # Check for errors (moderation, rate limit) every 3 seconds
+        if elapsed - last_error_check >= 3:
+            await _check_errors(browser.page)
+            last_error_check = elapsed
+
         if elapsed - last_preview >= 3:
             await browser.update_preview_if_enabled(progress)
             last_preview = elapsed
@@ -359,9 +395,7 @@ async def imagine_edit(
     progress.update(10)
 
     async with BrowserSession("grok", error_context="grok-imagine-edit") as browser:
-        gate_result = await _setup_imagine_page(browser, "1:1 Square (960x960)", video=False, block_video=True)
-        assert gate_result is not None
-        unblock, gate_state = gate_result
+        unblock, gate_state = await _setup_imagine_page(browser, "1:1 Square (960x960)", video=False)
         _, _, image_state, upload_state = _setup_response_tracking(browser.page, mode="image", max_images=max_images)
 
         log(f"Settings: {max_images} images", "○")
@@ -378,16 +412,17 @@ async def imagine_edit(
 
         edit_prompt = prompt or "Edit this image"
         log(f"Prompt: {edit_prompt[:60]}..." if len(edit_prompt) > 60 else f"Prompt: {edit_prompt}", "✎")
-        unblock()
         textarea = browser.page.locator('textarea[placeholder*="edit image" i]')
+        # Fill prompt BEFORE unblock to prevent premature request
         await textarea.fill(edit_prompt)
+        unblock()
         await textarea.press("Enter")
 
         await _verify_request_sent(gate_state, "textarea not found or Enter failed")
         log("Edit request sent", "✓")
         progress.update(40)
 
-        await _check_rate_limit(browser.page)
+        await _check_errors(browser.page)
 
         # Wait for images from API
         image_urls = await _wait_for_images(image_state, browser, progress, timeout=40)
@@ -434,9 +469,7 @@ async def imagine_t2v(
     progress.update(10)
 
     async with BrowserSession("grok", error_context="grok-imagine-t2v") as browser:
-        gate_result = await _setup_imagine_page(browser, size, video=True, mode=mode, block_video=True)
-        assert gate_result is not None
-        unblock, gate_state = gate_result
+        unblock, gate_state = await _setup_imagine_page(browser, size, video=True, mode=mode)
         captured, _, _, _ = _setup_response_tracking(browser.page, mode="video")
 
         _, expected_res = SIZES.get(size, ([1, 1], "960x960"))
@@ -444,8 +477,9 @@ async def imagine_t2v(
         log(f"Prompt: {prompt[:60]}..." if len(prompt) > 60 else f"Prompt: {prompt}", "✎")
         progress.update(30)
 
-        unblock()
+        # Type prompt BEFORE unblock to prevent premature request
         await browser.page.keyboard.insert_text(prompt)
+        unblock()
         await browser.page.keyboard.press("Enter")
 
         await _verify_request_sent(gate_state, "textarea not found or Enter failed")
@@ -471,11 +505,9 @@ async def imagine_i2v(
     progress.update(10)
 
     async with BrowserSession("grok", error_context="grok-imagine-i2v") as browser:
-        gate_result = await _setup_imagine_page(
-            browser, "1:1 Square (960x960)", video=True, mode=mode, block_video=True
+        unblock, gate_state = await _setup_imagine_page(
+            browser, "1:1 Square (960x960)", video=True, mode=mode
         )
-        assert gate_result is not None
-        unblock, gate_state = gate_result
         captured, _, _, upload_state = _setup_response_tracking(browser.page, mode="both")
 
         log(f"Settings: mode={mode} (size follows input image)", "○")
@@ -488,10 +520,11 @@ async def imagine_i2v(
         textarea = browser.page.locator('textarea[placeholder*="customize video"]')
         await textarea.wait_for(state="visible", timeout=10000)
 
-        unblock()
+        # Fill prompt BEFORE unblock to prevent Grok auto-firing without our prompt
         if prompt:
             await textarea.fill(prompt)
             log(f"Prompt: {prompt[:60]}..." if len(prompt) > 60 else f"Prompt: {prompt}", "✎")
+        unblock()
         await textarea.press("Enter")
 
         await _verify_request_sent(gate_state, "textarea not found or Enter failed")

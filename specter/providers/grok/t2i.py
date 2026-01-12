@@ -5,7 +5,7 @@ import base64
 import time
 
 from ...core.browser import BrowserSession, ProgressTracker, log
-from .imagine import SIZES, _check_rate_limit, _log_image_info, _setup_imagine_page
+from .imagine import SIZES, _check_errors, _log_image_info, _setup_imagine_page
 
 
 def _calc_viewport(size: str, max_images: int) -> dict:
@@ -63,7 +63,7 @@ async def imagine_t2i(
             arg=target_count,
             timeout=60000,
         )
-        await _check_rate_limit(browser.page)
+        await _check_errors(browser.page)
 
         # Wait for images to finish loading (base64 loads progressively: preview → full quality)
         # Use stability check: if sizes stop changing, images are done loading
@@ -73,6 +73,7 @@ async def imagine_t2i(
         last_preview = 0
         last_sizes = []
         stable_count = 0
+        last_error_check = 0
 
         while time.time() - wait_start < 40:
             try:
@@ -138,6 +139,9 @@ async def imagine_t2i(
                 last_sizes = current_state
 
             elapsed = time.time() - wait_start
+            if elapsed - last_error_check >= 3:
+                await _check_errors(browser.page)
+                last_error_check = elapsed
             if elapsed - last_preview >= 3:
                 await browser.update_preview_if_enabled(progress)
                 last_preview = elapsed

@@ -1,8 +1,25 @@
 """Debug utilities for Specter - dumps screenshots and page info on failure."""
 
 import json
+import os
 from datetime import datetime
 from pathlib import Path
+
+
+def _env_bool(name: str) -> bool:
+    """Check if env var is set to a truthy value."""
+    return os.getenv(name, "").lower() in ("1", "true", "yes")
+
+
+def is_debug_logging_enabled() -> bool:
+    """Check if SPECTER_DEBUG env var is set."""
+    return _env_bool("SPECTER_DEBUG")
+
+
+def is_trace_enabled() -> bool:
+    """Check if SPECTER_TRACE env var is set."""
+    return _env_bool("SPECTER_TRACE")
+
 
 # Debug dumps directory
 # specter/ directory (parent of core/)
