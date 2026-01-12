@@ -84,7 +84,7 @@ After installation, authenticate with your accounts (choose one method):
 
 Sessions save automatically for future use.
 
-https://github.com/user-attachments/assets/auth_demo.mp4
+https://github.com/user-attachments/assets/81329d1c-42d0-48c0-9137-a19ed5b8ba41
 
 ## Nodes
 
