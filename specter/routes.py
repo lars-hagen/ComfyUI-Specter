@@ -6,7 +6,7 @@ from server import PromptServer
 from .browser import browser_stream
 from .core.browser import check_browser_health, log
 from .core.debug import load_settings, save_settings
-from .core.session import delete_session, has_data, load_session, save_session
+from .core.session import delete_session, load_session, parse_cookies, save_session
 from .providers.chatgpt import ChatGPTService
 from .providers.grok import GrokService
 
@@ -78,11 +78,7 @@ async def get_service_status(request):
     service = request.match_info["service"]
     session = load_session(service)
     logged_in = session is not None and len(session.get("cookies", [])) > 0
-    data_status = has_data(service)
-    return web.json_response({
-        "logged_in": logged_in,
-        "has_data": data_status["has_session"] or data_status["has_profile"],
-    })
+    return web.json_response({"logged_in": logged_in})
 
 
 @PromptServer.instance.routes.post("/specter/{service}/logout")
@@ -92,6 +88,35 @@ async def trigger_service_logout(request):
     if result["errors"]:
         return web.json_response({"status": "partial", "deleted": result, "message": "; ".join(result["errors"])})
     return web.json_response({"status": "ok", "deleted": result})
+
+
+@PromptServer.instance.routes.post("/specter/{service}/import")
+async def import_cookies(request):
+    service = request.match_info["service"]
+    try:
+        data = await request.json()
+        cookies = parse_cookies(data.get("cookies", ""))
+        if not cookies:
+            return web.json_response({"status": "error", "message": "No valid cookies found"}, status=400)
+        save_session(service, {"cookies": cookies})
+        log(f"Imported {len(cookies)} cookies for {service}", "✓")
+        return web.json_response({"status": "ok", "count": len(cookies)})
+    except Exception as e:
+        return web.json_response({"status": "error", "message": str(e)}, status=400)
+
+
+@PromptServer.instance.routes.post("/specter/reset")
+async def reset_all_data(_request):
+    """Clear all session and profile data for all services."""
+    results = {}
+    errors = []
+    for service in SERVICE_PROVIDERS:
+        result = delete_session(service)
+        results[service] = result
+        errors.extend(result["errors"])
+    if errors:
+        return web.json_response({"status": "partial", "results": results, "message": "; ".join(errors)})
+    return web.json_response({"status": "ok", "results": results})
 
 
 @PromptServer.instance.routes.post("/specter/{service}/browser/start")

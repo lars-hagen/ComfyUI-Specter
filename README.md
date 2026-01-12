@@ -78,13 +78,24 @@ Already paying for ChatGPT Plus/Pro or X Premium? Use those features in ComfyUI 
 
 ### Authentication
 
-After installation, authenticate with your accounts (choose one method):
+After installation, authenticate with your accounts:
+
+**Option 1: Embedded Browser (Recommended)**
 - **Automatic:** Run any Specter node - a login popup appears if needed
 - **Manual:** Go to Settings > Specter > Authentication > Sign In
 
-Sessions save automatically for future use.
-
 https://github.com/user-attachments/assets/81329d1c-42d0-48c0-9137-a19ed5b8ba41
+
+**Option 2: Cookie Import**
+
+If the embedded browser doesn't work (VPN, network restrictions, etc.), import cookies from your regular browser:
+
+1. Install [Get cookies.txt LOCALLY](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc) (Chrome/Edge) or [Firefox version](https://addons.mozilla.org/en-US/firefox/addon/get-cookies-txt-locally/)
+2. Go to [chatgpt.com](https://chatgpt.com) or [grok.com](https://grok.com) and log in
+3. Click the extension icon and export cookies (JSON or Netscape TXT format)
+4. In ComfyUI: Settings > Specter > Authentication > click the import button (📥) > paste or drop the file
+
+Sessions save automatically for future use.
 
 ## Nodes
 

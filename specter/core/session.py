@@ -17,16 +17,6 @@ def get_profile_path(service: str) -> str:
     return os.path.join(USER_DATA_DIR, "profiles", f"firefox-{service}")
 
 
-def has_data(service: str) -> dict:
-    """Check if any session or profile data exists for a service."""
-    session_path = get_session_path(service)
-    profile_path = get_profile_path(service)
-    return {
-        "has_session": os.path.exists(session_path),
-        "has_profile": os.path.exists(profile_path),
-    }
-
-
 def load_session(service: str) -> dict | None:
     path = get_session_path(service)
     if os.path.exists(path):
@@ -41,6 +31,51 @@ def load_session(service: str) -> dict | None:
 def save_session(service: str, storage_state: dict):
     with open(get_session_path(service), "w") as f:
         json.dump(storage_state, f)
+
+
+def parse_cookies(content: str) -> list[dict]:
+    """Parse cookies from JSON or Netscape TXT format."""
+    content = content.strip()
+
+    # Try JSON first
+    if content.startswith("["):
+        cookies = json.loads(content)
+        # Convert Chrome extension format to Playwright format
+        return [
+            {
+                "name": c["name"],
+                "value": c["value"],
+                "domain": c["domain"],
+                "path": c.get("path", "/"),
+                "secure": c.get("secure", False),
+                "httpOnly": c.get("httpOnly", False),
+                "expires": c.get("expirationDate", -1),
+                "sameSite": {"no_restriction": "None", "lax": "Lax", "strict": "Strict"}.get(
+                    c.get("sameSite", "lax"), "Lax"
+                ),
+            }
+            for c in cookies
+        ]
+
+    # Parse Netscape TXT format
+    cookies = []
+    for line in content.split("\n"):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) >= 7:
+            cookies.append({
+                "name": parts[5],
+                "value": parts[6],
+                "domain": parts[0],
+                "path": parts[2],
+                "secure": parts[3].upper() == "TRUE",
+                "httpOnly": False,
+                "expires": int(parts[4]) if parts[4] != "0" else -1,
+                "sameSite": "Lax",
+            })
+    return cookies
 
 
 def delete_session(service: str) -> dict:

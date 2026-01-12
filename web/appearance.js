@@ -10,8 +10,35 @@ const style = document.createElement("style");
 style.textContent = `
     .specter-loading::after { content: ''; animation: specter-dots 1.5s steps(4, end) infinite; }
     @keyframes specter-dots { 0%,25%{content:''} 26%,50%{content:'.'} 51%,75%{content:'..'} 76%,100%{content:'...'} }
+    .specter-dialog { display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 10000; background: var(--comfy-menu-bg, #353535); border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.4); border: 1px solid var(--border-color, #4e4e4e); min-width: 400px; }
+    .specter-dialog-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 12px 8px 16px; }
+    .specter-dialog-title { color: var(--fg-color, #fff); font-weight: 600; font-size: 16px; display: flex; align-items: center; gap: 8px; }
+    .specter-dialog-content { padding: 0 16px 16px; }
+    .specter-dialog textarea { width: 100%; height: 150px; resize: vertical; background: var(--comfy-input-bg, #222); border: 1px solid var(--border-color, #4e4e4e); border-radius: 6px; color: var(--fg-color, #ddd); padding: 8px; font-family: monospace; font-size: 12px; }
+    .specter-dialog-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+    .specter-dropzone { border: 2px dashed var(--border-color, #4e4e4e); border-radius: 6px; padding: 16px; text-align: center; color: var(--p-text-muted-color, #888); margin-bottom: 8px; transition: border-color 0.2s; }
+    .specter-dropzone.dragover { border-color: var(--p-primary-color, #6366f1); background: rgba(99, 102, 241, 0.1); }
 `;
 document.head.appendChild(style);
+
+// Shared close button SVG
+const CLOSE_ICON = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg" class="p-icon" aria-hidden="true"><path d="M8.01186 7.00933L12.27 2.75116C12.341 2.68501 12.398 2.60524 12.4375 2.51661C12.4769 2.42798 12.4982 2.3323 12.4999 2.23529C12.5016 2.13827 12.4838 2.0419 12.4474 1.95194C12.4111 1.86197 12.357 1.78024 12.2884 1.71163C12.2198 1.64302 12.138 1.58893 12.0481 1.55259C11.9581 1.51625 11.8617 1.4984 11.7647 1.50011C11.6677 1.50182 11.572 1.52306 11.4834 1.56255C11.3948 1.60204 11.315 1.65898 11.2488 1.72997L6.99067 5.98814L2.7325 1.72997C2.59553 1.60234 2.41437 1.53286 2.22718 1.53616C2.03999 1.53946 1.8614 1.61529 1.72901 1.74767C1.59663 1.88006 1.5208 2.05865 1.5175 2.24584C1.5142 2.43303 1.58368 2.61419 1.71131 2.75116L5.96948 7.00933L1.71131 11.2675C1.576 11.403 1.5 11.5866 1.5 11.7781C1.5 11.9696 1.576 12.1532 1.71131 12.2887C1.84679 12.424 2.03043 12.5 2.2219 12.5C2.41338 12.5 2.59702 12.424 2.7325 12.2887L6.99067 8.03052L11.2488 12.2887C11.3843 12.424 11.568 12.5 11.7594 12.5C11.9509 12.5 12.1346 12.424 12.27 12.2887C12.4053 12.1532 12.4813 11.9696 12.4813 11.7781C12.4813 11.5866 12.4053 11.403 12.27 11.2675L8.01186 7.00933Z" fill="currentColor"></path></svg>`;
+
+// Simple reusable dialog
+function createDialog(title, icon) {
+    const el = document.createElement("div");
+    el.className = "specter-dialog p-dialog p-component";
+    el.innerHTML = `
+        <div class="specter-dialog-header">
+            <span class="specter-dialog-title"><i class="pi pi-${icon}"></i>${title}</span>
+            <button class="p-button p-component p-button-icon-only p-button-rounded p-button-text p-button-secondary" type="button">${CLOSE_ICON}</button>
+        </div>
+        <div class="specter-dialog-content"></div>
+    `;
+    el.querySelector("button").onclick = () => el.style.display = "none";
+    document.body.appendChild(el);
+    return { el, content: el.querySelector(".specter-dialog-content"), show: () => el.style.display = "block", hide: () => el.style.display = "none" };
+}
 
 // Single reusable browser popup
 const browserPopup = {
@@ -29,22 +56,18 @@ const browserPopup = {
         if (this.el) return;
 
         this.el = document.createElement("div");
-        this.el.className = "p-dialog p-component";
-        this.el.style.cssText = `
-            display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            z-index: 10000; background: var(--comfy-menu-bg, #353535); border-radius: 12px;
-            box-shadow: 0 8px 32px rgba(0,0,0,0.4); border: 1px solid var(--border-color, #4e4e4e);
-        `;
+        this.el.className = "specter-dialog p-dialog p-component";
 
         const header = document.createElement("div");
-        header.className = "p-dialog-header";
-        header.style.cssText = "display: flex; justify-content: space-between; align-items: center; padding: 12px 12px 8px 16px; cursor: move;";
+        header.className = "specter-dialog-header";
+        header.style.cursor = "move";
 
         const titleContainer = document.createElement("div");
         titleContainer.style.cssText = "display: flex; flex-direction: column; gap: 2px;";
 
         this.titleEl = document.createElement("span");
-        this.titleEl.style.cssText = "color: var(--fg-color, #fff); font-weight: 600; font-size: 18px; display: flex; align-items: center; gap: 8px;";
+        this.titleEl.className = "specter-dialog-title";
+        this.titleEl.style.fontSize = "18px";
 
         this.subtitleEl = document.createElement("span");
         this.subtitleEl.style.cssText = "color: var(--p-text-muted-color, #888); font-size: 12px; display: none;";
@@ -53,17 +76,15 @@ const browserPopup = {
         header.appendChild(titleContainer);
 
         const closeBtn = document.createElement("button");
-        closeBtn.className = "p-button p-component p-button-icon-only p-button-rounded p-button-text p-button-secondary p-dialog-close-button";
+        closeBtn.className = "p-button p-component p-button-icon-only p-button-rounded p-button-text p-button-secondary";
         closeBtn.type = "button";
-        closeBtn.ariaLabel = "Close";
-        closeBtn.style.color = "var(--p-text-muted-color, #888)";
-        closeBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg" class="p-icon" aria-hidden="true"><path d="M8.01186 7.00933L12.27 2.75116C12.341 2.68501 12.398 2.60524 12.4375 2.51661C12.4769 2.42798 12.4982 2.3323 12.4999 2.23529C12.5016 2.13827 12.4838 2.0419 12.4474 1.95194C12.4111 1.86197 12.357 1.78024 12.2884 1.71163C12.2198 1.64302 12.138 1.58893 12.0481 1.55259C11.9581 1.51625 11.8617 1.4984 11.7647 1.50011C11.6677 1.50182 11.572 1.52306 11.4834 1.56255C11.3948 1.60204 11.315 1.65898 11.2488 1.72997L6.99067 5.98814L2.7325 1.72997C2.59553 1.60234 2.41437 1.53286 2.22718 1.53616C2.03999 1.53946 1.8614 1.61529 1.72901 1.74767C1.59663 1.88006 1.5208 2.05865 1.5175 2.24584C1.5142 2.43303 1.58368 2.61419 1.71131 2.75116L5.96948 7.00933L1.71131 11.2675C1.576 11.403 1.5 11.5866 1.5 11.7781C1.5 11.9696 1.576 12.1532 1.71131 12.2887C1.84679 12.424 2.03043 12.5 2.2219 12.5C2.41338 12.5 2.59702 12.424 2.7325 12.2887L6.99067 8.03052L11.2488 12.2887C11.3843 12.424 11.568 12.5 11.7594 12.5C11.9509 12.5 12.1346 12.424 12.27 12.2887C12.4053 12.1532 12.4813 11.9696 12.4813 11.7781C12.4813 11.5866 12.4053 11.403 12.27 11.2675L8.01186 7.00933Z" fill="currentColor"></path></svg>`;
+        closeBtn.innerHTML = CLOSE_ICON;
         closeBtn.onclick = () => this.stop();
         header.appendChild(closeBtn);
 
         const content = document.createElement("div");
-        content.className = "p-dialog-content";
-        content.style.cssText = "position: relative; padding: 0 12px 12px 12px;";
+        content.className = "specter-dialog-content";
+        content.style.position = "relative";
 
         this.canvas = document.createElement("canvas");
         this.canvas.style.cssText = "cursor: pointer; display: block; border-radius: 6px; outline: none;";
@@ -203,11 +224,6 @@ const browserPopup = {
         this.ctx.fillText("⚠ " + clean, 16, 45);
     },
 
-    showSuccess() {
-        this.loadingOverlay.innerHTML = `<span style="color: #4ade80; display: flex; align-items: center; gap: 8px;"><i class="pi pi-check-circle" style="font-size: 20px;"></i>Logged in successfully</span>`;
-        this.loadingOverlay.style.display = "block";
-    },
-
     connectWS() {
         const protocol = location.protocol === "https:" ? "wss:" : "ws:";
         this.ws = new WebSocket(`${protocol}//${location.host}/specter/browser/ws`);
@@ -245,9 +261,11 @@ const browserPopup = {
 
 // Factory for login button settings
 function createLoginSetting(id, service) {
-    const statusEndpoint = `/specter/${service.toLowerCase()}/status`;
-    const logoutEndpoint = `/specter/${service.toLowerCase()}/logout`;
-    const loginEndpoint = `/specter/${service.toLowerCase()}/browser/start`;
+    const serviceLower = service.toLowerCase();
+    const statusEndpoint = `/specter/${serviceLower}/status`;
+    const logoutEndpoint = `/specter/${serviceLower}/logout`;
+    const loginEndpoint = `/specter/${serviceLower}/browser/start`;
+    const importEndpoint = `/specter/${serviceLower}/import`;
 
     return {
         id,
@@ -267,13 +285,13 @@ function createLoginSetting(id, service) {
             loginBtn.className = "p-button p-component";
             loginBtn.style.minWidth = "116px";
 
-            const clearBtn = document.createElement("button");
-            clearBtn.type = "button";
-            clearBtn.className = "pi pi-trash";
-            clearBtn.title = "Clear saved session and browser profile data";
-            clearBtn.style.cssText = "background: none; border: none; color: var(--p-text-muted-color, #888); cursor: pointer; font-size: 14px; padding: 4px;";
+            const importBtn = document.createElement("button");
+            importBtn.type = "button";
+            importBtn.className = "p-button p-component p-button-icon-only p-button-text";
+            importBtn.title = "Import cookies from browser extension";
+            importBtn.innerHTML = `<span class="p-button-icon pi pi-file-import"></span>`;
 
-            container.append(statusText, clearBtn, loginBtn);
+            container.append(statusText, loginBtn, importBtn);
 
             let isLoggedIn = false;
 
@@ -297,9 +315,59 @@ function createLoginSetting(id, service) {
                 }
             });
 
-            clearBtn.addEventListener("click", async () => {
-                await fetch(logoutEndpoint, { method: "POST" });
-                await checkStatus();
+            // Import dialog (created once, reused)
+            let importDialog = null;
+            importBtn.addEventListener("click", () => {
+                if (!importDialog) {
+                    importDialog = createDialog(`Import ${service} Cookies`, "file-import");
+                    importDialog.content.innerHTML = `
+                        <div class="specter-dropzone">Drop cookies.txt or cookies.json here, or click to browse</div>
+                        <input type="file" accept=".txt,.json" style="display: none">
+                        <textarea placeholder="Or paste cookie content here (JSON or Netscape TXT format)..."></textarea>
+                        <div class="specter-dialog-actions">
+                            <button class="p-button p-component" type="button"><span class="p-button-label">Import</span></button>
+                        </div>
+                    `;
+                    const dropzone = importDialog.content.querySelector(".specter-dropzone");
+                    const fileInput = importDialog.content.querySelector("input[type=file]");
+                    const textarea = importDialog.content.querySelector("textarea");
+                    const importAction = importDialog.content.querySelector(".specter-dialog-actions button");
+
+                    const handleFile = (file) => {
+                        const reader = new FileReader();
+                        reader.onload = (e) => { textarea.value = e.target.result; };
+                        reader.readAsText(file);
+                    };
+
+                    dropzone.onclick = () => fileInput.click();
+                    fileInput.onchange = (e) => e.target.files[0] && handleFile(e.target.files[0]);
+                    dropzone.ondragover = (e) => { e.preventDefault(); dropzone.classList.add("dragover"); };
+                    dropzone.ondragleave = () => dropzone.classList.remove("dragover");
+                    dropzone.ondrop = (e) => { e.preventDefault(); dropzone.classList.remove("dragover"); e.dataTransfer.files[0] && handleFile(e.dataTransfer.files[0]); };
+
+                    importAction.onclick = async () => {
+                        const cookies = textarea.value.trim();
+                        if (!cookies) return;
+                        importAction.disabled = true;
+                        importAction.querySelector(".p-button-label").textContent = "Importing...";
+                        try {
+                            const resp = await fetch(importEndpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cookies }) });
+                            const data = await resp.json();
+                            if (data.status === "ok") {
+                                importDialog.hide();
+                                textarea.value = "";
+                                await checkStatus();
+                            } else {
+                                alert(`Import failed: ${data.message}`);
+                            }
+                        } catch (e) {
+                            alert(`Import failed: ${e.message}`);
+                        }
+                        importAction.disabled = false;
+                        importAction.querySelector(".p-button-label").textContent = "Import";
+                    };
+                }
+                importDialog.show();
             });
 
             checkStatus();
@@ -398,6 +466,33 @@ app.registerExtension({
         createSettingsButton("Specter.GrokSettings", "Grok"),
         createToggleSetting("Specter.HeadedBrowser", ["Specter", "Advanced", "Browser"], "Show Browser Window", "Run browser visibly for debugging", "headed_browser", "Enable headed mode"),
         createToggleSetting("Specter.DebugDumps", ["Specter", "Advanced", "Debugging"], "Debug Dumps", "Save debug info on error", "debug_dumps", "Enable debug dumps on error", true),
+        {
+            id: "Specter.ResetData",
+            category: ["Specter", "Advanced", "Data"],
+            name: "Reset All Data",
+            tooltip: "Clear all saved sessions and browser profiles",
+            type: () => {
+                const btn = document.createElement("button");
+                btn.type = "button";
+                btn.className = "p-button p-component p-button-danger";
+                btn.innerHTML = `<span class="p-button-icon p-button-icon-left pi pi-trash"></span><span class="p-button-label">Reset All Data</span>`;
+                btn.addEventListener("click", async () => {
+                    if (!confirm("This will clear all saved sessions and browser profiles for ChatGPT and Grok. Continue?")) return;
+                    btn.disabled = true;
+                    btn.querySelector(".p-button-label").textContent = "Clearing...";
+                    try {
+                        await fetch("/specter/reset", { method: "POST" });
+                        btn.querySelector(".p-button-label").textContent = "Done!";
+                        setTimeout(() => { btn.querySelector(".p-button-label").textContent = "Reset All Data"; btn.disabled = false; }, 2000);
+                    } catch {
+                        btn.querySelector(".p-button-label").textContent = "Failed";
+                        setTimeout(() => { btn.querySelector(".p-button-label").textContent = "Reset All Data"; btn.disabled = false; }, 2000);
+                    }
+                });
+                return btn;
+            },
+            defaultValue: "",
+        },
     ],
 
     async nodeCreated(node) {

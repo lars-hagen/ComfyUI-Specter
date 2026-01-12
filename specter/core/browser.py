@@ -463,6 +463,8 @@ class BrowserSession:
         """Start browser session. Acquires service lock with crash recovery."""
         await self._lock.acquire()
         try:
+            # Clear any stale profile locks before launch
+            await self._clear_profile_lock()
             self.playwright, self.context, self.page, self.session = await launch_browser(
                 self.service, viewport=self.viewport, headless=self.headless, purpose=self.purpose
             )
@@ -472,7 +474,7 @@ class BrowserSession:
             if "lock" in error_msg or "running" in error_msg or "timeout" in error_msg:
                 log("Browser launch failed, attempting recovery...", "⟳")
                 await self._clear_profile_lock()
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.5)
                 try:
                     self.playwright, self.context, self.page, self.session = await launch_browser(
                         self.service, viewport=self.viewport, headless=self.headless, purpose=self.purpose
@@ -486,15 +488,14 @@ class BrowserSession:
         return self
 
     async def _clear_profile_lock(self):
-        """Clear Firefox profile lock files after a crash."""
+        """Clear Firefox profile lock files. Only logs when locks are actually removed."""
         profile_dir = os.path.join(PROFILES_DIR, f"firefox-{self.service}")
-        lock_files = [".parentlock", "lock", "parent.lock"]
-        for lock_file in lock_files:
+        for lock_file in [".parentlock", "lock", "parent.lock"]:
             lock_path = os.path.join(profile_dir, lock_file)
             try:
                 if os.path.exists(lock_path):
                     os.remove(lock_path)
-                    log(f"Removed stale lock: {lock_file}", "○")
+                    log(f"Cleared stale lock: {lock_file}", "○")
             except Exception:
                 pass
 
