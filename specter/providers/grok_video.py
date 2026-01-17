@@ -8,14 +8,9 @@ from io import BytesIO
 
 from PIL import Image
 
-from ...core.browser import (
-    BrowserSession,
-    ProgressTracker,
-    debug_log,
-    log,
-)
-from ...core.session import handle_login_flow
-from .chat import AGE_VERIFICATION_INIT_SCRIPT
+from ..core.browser import ProgressTracker, capture_preview, close_browser, debug_log, launch_browser, log
+
+AGE_VERIFICATION_INIT_SCRIPT = """localStorage.setItem('age-verif', '{"state":{"stage":"pass"},"version":3}');"""
 
 GROK_LOGIN_EVENT = "specter-grok-login-required"
 
@@ -71,15 +66,18 @@ async def _check_errors(page):
 
 
 async def _setup_imagine_page(
-    browser: BrowserSession, size: str, video: bool, mode: str | None = None
+    page, size: str, video: bool, mode: str | None = None
 ) -> tuple:
     """Set up page for Grok Imagine.
 
     Args:
-        browser: BrowserSession instance (handles login flow if needed)
+        page: Playwright page instance
 
     Returns:
         (unblock_fn, gate_state) - call unblock() right before submitting.
+
+    Raises:
+        RuntimeError: If login is required (caller should handle re-authentication)
     """
     ar, _ = SIZES.get(size, ([1, 1], "960x960"))
     store = {"state": {"imagineMode": "video" if video else "image", "aspectRatio": ar}}
@@ -93,26 +91,16 @@ async def _setup_imagine_page(
         {AGE_VERIFICATION_INIT_SCRIPT}
     """
 
-    async def _navigate_and_setup():
-        """Navigate and set up page, returns gate_result."""
-        page = browser.page
-        await page.add_init_script(init_script)
+    await page.add_init_script(init_script)
+    gate_result = await _setup_request_gate(page, mode=mode if video else None, allow_video=video)
+    await page.goto("https://grok.com/imagine", timeout=60000, wait_until="domcontentloaded")
 
-        gate_result = await _setup_request_gate(page, mode=mode if video else None, allow_video=video)
-
-        await page.goto("https://grok.com/imagine", timeout=60000, wait_until="domcontentloaded")
-
-        # Hide text selection highlight (prevents visual artifacts in screenshots)
-        await page.evaluate("""() => {
-            const style = document.createElement('style');
-            style.textContent = '::selection { background: transparent !important; }';
-            document.head.appendChild(style);
-        }""")
-
-        return gate_result
-
-    gate_result = await _navigate_and_setup()
-    page = browser.page
+    # Hide text selection highlight (prevents visual artifacts in screenshots)
+    await page.evaluate("""() => {
+        const style = document.createElement('style');
+        style.textContent = '::selection { background: transparent !important; }';
+        document.head.appendChild(style);
+    }""")
 
     # Wait for either editor (logged in) or landing page (not logged in)
     editor_selector = ".tiptap.ProseMirror"
@@ -124,20 +112,9 @@ async def _setup_imagine_page(
     except Exception:
         pass
 
-    # Check if we're on the landing page (not logged in) - trigger login popup
+    # Check if we're on the landing page (not logged in)
     if await page.locator(LANDING_PAGE_SELECTOR).count() > 0:
-        log("Not logged in - opening authentication popup...", "⚠")
-        await browser.close()
-        await handle_login_flow(None, "grok", GROK_LOGIN_EVENT, [])
-        await browser.start()
-        gate_result = await _navigate_and_setup()
-        page = browser.page
-
-        # Re-check after login
-        try:
-            await page.wait_for_selector(editor_selector, timeout=30000)
-        except Exception:
-            raise RuntimeError("Login failed. Please try again via ComfyUI Settings > Specter > Grok.") from None
+        raise RuntimeError("Login required. Please authenticate via ComfyUI Settings > Specter > Grok.")
 
     # Wait for editor to be fully hydrated
     await page.wait_for_function(
@@ -331,7 +308,7 @@ def _setup_response_tracking(page, mode: str, max_images: int = 1):
     return captured_videos, video_complete, image_complete, upload_state
 
 
-async def _wait_for_video(captured: list[bytes], browser, progress: ProgressTracker, timeout: int = 60) -> bytes:
+async def _wait_for_video(captured: list[bytes], page, progress: ProgressTracker, timeout: int = 70) -> bytes:
     """Wait for video to be captured via network interception (timeout in seconds)."""
     start = time.time()
     last_preview = 0
@@ -345,11 +322,13 @@ async def _wait_for_video(captured: list[bytes], browser, progress: ProgressTrac
 
         # Check for errors (moderation, rate limit) every 3 seconds
         if elapsed - last_error_check >= 3:
-            await _check_errors(browser.page)
+            await _check_errors(page)
             last_error_check = elapsed
 
-        if elapsed - last_preview >= 3:
-            await browser.update_preview_if_enabled(progress)
+        if elapsed - last_preview >= 3 and progress.preview:
+            preview_img = await capture_preview(page)
+            if preview_img:
+                progress.update(progress.current, preview_img)
             last_preview = elapsed
 
         await asyncio.sleep(1)
@@ -357,7 +336,7 @@ async def _wait_for_video(captured: list[bytes], browser, progress: ProgressTrac
     raise Exception("Timeout waiting for video")
 
 
-async def _wait_for_images(image_state: dict, browser, progress: ProgressTracker, timeout: int = 40) -> list[str]:
+async def _wait_for_images(image_state: dict, page, progress: ProgressTracker, timeout: int = 40) -> list[str]:
     """Wait for images via API response (timeout in seconds)."""
     start = time.time()
     last_preview = 0
@@ -371,11 +350,13 @@ async def _wait_for_images(image_state: dict, browser, progress: ProgressTracker
 
         # Check for errors (moderation, rate limit) every 3 seconds
         if elapsed - last_error_check >= 3:
-            await _check_errors(browser.page)
+            await _check_errors(page)
             last_error_check = elapsed
 
-        if elapsed - last_preview >= 3:
-            await browser.update_preview_if_enabled(progress)
+        if elapsed - last_preview >= 3 and progress.preview:
+            preview_img = await capture_preview(page)
+            if preview_img:
+                progress.update(progress.current, preview_img)
             last_preview = elapsed
 
         await asyncio.sleep(1)
@@ -394,17 +375,19 @@ async def imagine_edit(
     progress = ProgressTracker(pbar, preview)
     progress.update(10)
 
-    async with BrowserSession("grok", error_context="grok-imagine-edit") as browser:
-        unblock, gate_state = await _setup_imagine_page(browser, "1:1 Square (960x960)", video=False)
-        _, _, image_state, upload_state = _setup_response_tracking(browser.page, mode="image", max_images=max_images)
+    playwright, context, page, *_ = await launch_browser("grok")
+
+    try:
+        unblock, gate_state = await _setup_imagine_page(page, "1:1 Square (960x960)", video=False)
+        _, _, image_state, upload_state = _setup_response_tracking(page, mode="image", max_images=max_images)
 
         log(f"Settings: {max_images} images", "○")
         log(f"Uploading: {image_path}", "↑")
         progress.update(20)
 
-        await _upload_image(browser.page, image_path, upload_state, file_selector='input[type="file"][accept*="image"]')
+        await _upload_image(page, image_path, upload_state, file_selector='input[type="file"][accept*="image"]')
 
-        edit_btn = browser.page.locator('button:has-text("Edit image")').first
+        edit_btn = page.locator('button:has-text("Edit image")').first
         await edit_btn.wait_for(state="visible", timeout=30000)
         await edit_btn.click()
         log("Edit image clicked", "✓")
@@ -412,7 +395,7 @@ async def imagine_edit(
 
         edit_prompt = prompt or "Edit this image"
         log(f"Prompt: {edit_prompt[:60]}..." if len(edit_prompt) > 60 else f"Prompt: {edit_prompt}", "✎")
-        textarea = browser.page.locator('textarea[placeholder*="edit image" i]')
+        textarea = page.locator('textarea[placeholder*="edit image" i]')
         # Fill prompt BEFORE unblock to prevent premature request
         await textarea.fill(edit_prompt)
         unblock()
@@ -422,10 +405,10 @@ async def imagine_edit(
         log("Edit request sent", "✓")
         progress.update(40)
 
-        await _check_errors(browser.page)
+        await _check_errors(page)
 
         # Wait for images from API
-        image_urls = await _wait_for_images(image_state, browser, progress, timeout=40)
+        image_urls = await _wait_for_images(image_state, page, progress, timeout=40)
         progress.update(90)
 
         # Download images from URLs (respect max_images limit)
@@ -435,7 +418,7 @@ async def imagine_edit(
             # Prepend base URL if relative
             full_url = f"https://assets.grok.com/{url}" if not url.startswith("http") else url
             try:
-                resp = await browser.page.request.get(full_url, timeout=10000)
+                resp = await page.request.get(full_url, timeout=10000)
                 if resp.status == 200:
                     img_data = await resp.body()
                     _log_image_info(img_data, f"Image {idx + 1}")
@@ -455,6 +438,8 @@ async def imagine_edit(
                 pass
         progress.update(100)
         return images
+    finally:
+        await close_browser(playwright, context)
 
 
 async def imagine_t2v(
@@ -468,9 +453,11 @@ async def imagine_t2v(
     progress = ProgressTracker(pbar, preview)
     progress.update(10)
 
-    async with BrowserSession("grok", error_context="grok-imagine-t2v") as browser:
-        unblock, gate_state = await _setup_imagine_page(browser, size, video=True, mode=mode)
-        captured, _, _, _ = _setup_response_tracking(browser.page, mode="video")
+    playwright, context, page, *_ = await launch_browser("grok")
+
+    try:
+        unblock, gate_state = await _setup_imagine_page(page, size, video=True, mode=mode)
+        captured, _, _, _ = _setup_response_tracking(page, mode="video")
 
         _, expected_res = SIZES.get(size, ([1, 1], "960x960"))
         log(f"Settings: {expected_res}, mode={mode}", "○")
@@ -478,19 +465,21 @@ async def imagine_t2v(
         progress.update(30)
 
         # Type prompt BEFORE unblock to prevent premature request
-        await browser.page.keyboard.insert_text(prompt)
+        await page.keyboard.insert_text(prompt)
         unblock()
-        await browser.page.keyboard.press("Enter")
+        await page.keyboard.press("Enter")
 
         await _verify_request_sent(gate_state, "textarea not found or Enter failed")
         log("Video generation started", "✓")
         progress.update(40)
 
-        video = await _wait_for_video(captured, browser, progress)
+        video = await _wait_for_video(captured, page, progress)
         size_kb = len(video) // 1024
         log(f"Video complete ({size_kb}KB, requested: {expected_res})", "✓")
         progress.update(100)
         return video
+    finally:
+        await close_browser(playwright, context)
 
 
 async def imagine_i2v(
@@ -504,20 +493,22 @@ async def imagine_i2v(
     progress = ProgressTracker(pbar, preview)
     progress.update(10)
 
-    async with BrowserSession("grok", error_context="grok-imagine-i2v") as browser:
+    playwright, context, page, *_ = await launch_browser("grok")
+
+    try:
         unblock, gate_state = await _setup_imagine_page(
-            browser, "1:1 Square (960x960)", video=True, mode=mode
+            page, "1:1 Square (960x960)", video=True, mode=mode
         )
-        captured, _, _, upload_state = _setup_response_tracking(browser.page, mode="both")
+        captured, _, _, upload_state = _setup_response_tracking(page, mode="both")
 
         log(f"Settings: mode={mode} (size follows input image)", "○")
         log(f"Uploading: {image_path}", "↑")
         progress.update(20)
 
-        await _upload_image(browser.page, image_path, upload_state)
+        await _upload_image(page, image_path, upload_state)
         progress.update(30)
 
-        textarea = browser.page.locator('textarea[placeholder*="customize video"]')
+        textarea = page.locator('textarea[placeholder*="customize video"]')
         await textarea.wait_for(state="visible", timeout=10000)
 
         # Fill prompt BEFORE unblock to prevent Grok auto-firing without our prompt
@@ -531,8 +522,10 @@ async def imagine_i2v(
         log("Video generation started", "✓")
         progress.update(40)
 
-        video = await _wait_for_video(captured, browser, progress)
+        video = await _wait_for_video(captured, page, progress)
         size_kb = len(video) // 1024
         log(f"Video complete ({size_kb}KB)", "✓")
         progress.update(100)
         return video
+    finally:
+        await close_browser(playwright, context)

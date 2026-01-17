@@ -1,115 +1,19 @@
-"""ChatGPT service - Browser automation for ChatGPT web interface."""
+"""ChatGPT provider - standalone, no inheritance."""
 
-import uuid
+import asyncio
+import json
 
-from ..core.browser import log
-from .base import ChatService, ServiceConfig
+from ..core.browser import (
+    ProgressTracker,
+    capture_preview,
+    close_browser,
+    handle_login,
+    is_logged_in,
+    launch_browser,
+    log,
+)
 
-
-class ChatGPTService(ChatService):
-    """ChatGPT implementation of ChatService."""
-
-    def __init__(self):
-        super().__init__()
-        self._async_status_ok = False  # Track when async-status returns OK
-        self._pending_file_ids: set[str] = set()  # Files waiting for async completion
-
-    config = ServiceConfig(
-        service_name="chatgpt",
-        base_url="https://chatgpt.com/",
-        selectors={
-            "textarea": "#prompt-textarea",
-            "send_button": '[data-testid="send-button"]',
-            "response": '[data-message-author-role="assistant"]',
-        },
-        login_selectors=[
-            'button:has-text("Log in")',
-            'a:has-text("Log in")',
-            'button:has-text("Sign up")',
-            'a:has-text("Sign up")',
-        ],
-        login_event="specter-login-required",
-        image_url_patterns=["estuary/content", "oaiusercontent.com"],
-        image_min_size=500000,  # 500KB for ChatGPT images
-        response_timeout=300,
-        image_ready_selector='button[aria-label="Download this image"]',
-        init_scripts=[
-            """localStorage.setItem('oai/apps/theme', '"dark"');""",
-            """localStorage.removeItem('RESUME_TOKEN_STORE_KEY');""",
-        ],
-        cookies=[
-            {"name": "oai-allow-ne", "value": "true", "domain": ".chatgpt.com", "path": "/"},
-        ],
-    )
-
-    def _get_intercept_pattern(self) -> str:
-        return "**/backend-api/**/conversation"
-
-    def _is_api_response(self, url: str) -> bool:
-        return (
-            "backend-api/f/conversation" in url
-            or "backend-api/conversation" in url
-            or "backend-api/files/process_upload_stream" in url
-        )
-
-    def modify_request_body(self, body: dict, model: str, system_message: str | None, **kwargs) -> bool:
-        """Modify request to set model and inject system message."""
-        modified = False
-
-        if model and "model" in body and body["model"] != model:
-            log(f"Intercepting request: model = '{model}'", "⟳")
-            body["model"] = model
-            modified = True
-
-        if system_message and "messages" in body and body["messages"]:
-            system_msg = {
-                "id": str(uuid.uuid4()),
-                "author": {"role": "system"},
-                "content": {"content_type": "text", "parts": [system_message]},
-                "metadata": {},
-            }
-            body["messages"].insert(0, system_msg)
-            log(f"Intercepting request: messages[0] = system('{system_message[:40]}...')", "⟳")
-            # Full system message in debug mode
-            from ..core.debug import is_debug_logging_enabled
-
-            if is_debug_logging_enabled():
-                log(f"Full system message:\n{system_message}", "◆")
-            modified = True
-
-        return modified
-
-    async def handle_upload_response_body(self, body: dict) -> dict | None:
-        """Detect ChatGPT upload completion."""
-        event = body.get("event", "")
-        if event == "file.processing.completed" and body.get("progress") == 100:
-            return {
-                "complete": True,
-                "file_id": body.get("file_id", "unknown"),
-                "metadata": body,
-            }
-        return None
-
-    async def extract_response_text(self) -> str:
-        """Extract response text from ChatGPT's markdown prose."""
-        try:
-            prose = self.page.locator(f"{self.config.selectors['response']} .markdown.prose").last
-            if await prose.count() > 0:
-                return await prose.inner_text(timeout=2000)
-        except Exception:
-            pass
-        return ""
-
-    async def _handle_response(self, response):
-        """Override to ignore conversation/init 404 errors (new conversation flow)."""
-        if response.status == 404 and "conversation/init" in response.url:
-            log("Ignoring 404 from conversation/init (new conversation)", "○")
-            return
-        await super()._handle_response(response)
-
-
-# Singleton instance
-_service = ChatGPTService()
+LOGIN_SELECTORS = ['button:has-text("Log in")', 'a:has-text("Log in")', 'button:has-text("Sign up")']
 
 
 async def chat_with_gpt(
@@ -120,18 +24,134 @@ async def chat_with_gpt(
     pbar=None,
     preview: bool = False,
     _expect_image: bool = False,
-    disable_tools: bool = False,  # Unused - for API parity with Grok
+    disable_tools: bool = False,
 ) -> tuple[str, bytes | None]:
-    """Send message to ChatGPT and return response text + captured image.
+    """Send message to ChatGPT and return (text, image_bytes)."""
+    progress = ProgressTracker(pbar, preview)
+    progress.update(5)
 
-    This is the public API that nodes use.
-    """
-    return await _service.chat(
-        prompt=prompt,
-        model=model,
-        image_path=image_path,
-        system_message=system_message,
-        pbar=pbar,
-        preview=preview,
-        _expect_image=_expect_image,
-    )
+    pw, context, page, _ = await launch_browser("chatgpt")
+    progress.update(10)
+
+    try:
+        await page.goto("https://chatgpt.com/", wait_until="domcontentloaded")
+
+        if not await is_logged_in(page, LOGIN_SELECTORS):
+            await close_browser(pw, context)
+            session = await handle_login("chatgpt", "specter-login-required", LOGIN_SELECTORS)
+            pw, context, page, _ = await launch_browser("chatgpt")
+            if session.get("cookies"):
+                await context.add_cookies(session["cookies"])
+            await page.goto("https://chatgpt.com/", wait_until="domcontentloaded")
+
+        await page.wait_for_selector("#prompt-textarea", timeout=30000)
+        log("Connected to ChatGPT", "●")
+        progress.update(20)
+
+        # Request interception for model/system message
+        if system_message or (model and model != "gpt-4o"):
+            async def intercept(route):
+                if "backend-api" in route.request.url and "conversation" in route.request.url:
+                    try:
+                        body = json.loads(route.request.post_data or "{}")
+                        if model and "model" in body:
+                            body["model"] = model
+                        if system_message and "messages" in body and body["messages"]:
+                            body["messages"].insert(0, {
+                                "author": {"role": "system"},
+                                "content": {"content_type": "text", "parts": [system_message]},
+                            })
+                        await route.continue_(post_data=json.dumps(body))
+                        return
+                    except:
+                        pass
+                await route.continue_()
+            await page.route("**/backend-api/**/conversation", intercept)
+
+        # Upload image if provided
+        if image_path:
+            log("Attaching image...", "↑")
+            file_input = page.locator('input[type="file"]').first
+            await file_input.set_input_files(image_path)
+            await asyncio.sleep(2)  # Wait for upload
+            progress.update(30)
+
+        # Send prompt
+        prompt_preview = prompt[:60] + "..." if len(prompt) > 60 else prompt
+        log(f'Sending: "{prompt_preview}"', "✎")
+        await page.fill("#prompt-textarea", prompt)
+        await page.keyboard.press("Enter")
+        progress.update(40)
+
+        # Wait for response
+        result_text = ""
+        result_image = None
+
+        if _expect_image:
+            result_text, result_image = await _wait_for_image(page, progress, preview)
+        else:
+            result_text = await _wait_for_text(page, progress, preview)
+
+        if result_text or result_image:
+            log(f"Success: {len(result_text)} chars" + (" + image" if result_image else ""), "★")
+        else:
+            log("No response captured", "⚠")
+
+        return result_text, result_image
+
+    except asyncio.CancelledError:
+        log("Interrupted", "✕")
+        raise
+    except Exception as e:
+        log(f"Error: {str(e).split(chr(10))[0]}", "✕")
+        raise
+    finally:
+        await close_browser(pw, context)
+
+
+async def _wait_for_image(page, progress: ProgressTracker, preview: bool) -> tuple[str, bytes | None]:
+    """Wait for image generation to complete."""
+    try:
+        await page.wait_for_selector('text="Image created"', timeout=120000)
+        progress.update(80)
+
+        img = page.locator('div[style*="height: 100%"] > img[alt^="Generated image"]').first
+        await img.wait_for(timeout=5000)
+
+        src = await img.get_attribute("src")
+        data = await (await page.request.get(src)).body()
+        log(f"Captured {len(data)//1024}KB image", "◆")
+        progress.update(95)
+
+        if preview:
+            progress.update(95, await capture_preview(page))
+
+        return "Image generated", data
+    except Exception as e:
+        log(f"Image capture failed: {e}", "⚠")
+        return "", None
+
+
+async def _wait_for_text(page, progress: ProgressTracker, preview: bool) -> str:
+    """Wait for text response to complete."""
+    try:
+        # Wait for stop button to appear (streaming started)
+        await page.wait_for_selector('[data-testid="stop-button"]', timeout=30000)
+        progress.update(60)
+
+        # Wait for stop button to disappear (streaming done)
+        await page.wait_for_selector('[data-testid="stop-button"]', state="hidden", timeout=120000)
+        progress.update(90)
+
+        # Get last assistant message
+        msg = page.locator('[data-message-author-role="assistant"] .markdown.prose').last
+        text = await msg.inner_text()
+        progress.update(95)
+
+        if preview:
+            progress.update(95, await capture_preview(page))
+
+        return text
+    except Exception as e:
+        log(f"Text extraction failed: {e}", "⚠")
+        return ""

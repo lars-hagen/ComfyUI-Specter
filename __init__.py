@@ -1,33 +1,25 @@
 """ComfyUI-Specter - Browser automation nodes for AI web interfaces."""
 
 from .specter import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS, routes  # noqa: F401
-from .specter.core.browser import check_browser_health, ensure_firefox_installed
-from .specter.core.debug import is_debug_logging_enabled, is_trace_enabled
+from .specter.core.browser import is_debug_enabled, is_trace_enabled
 
 WEB_DIRECTORY = "./web"
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
 
-# Ensure Playwright Firefox is installed, then check if it can launch
-ensure_firefox_installed()
-ready, error = check_browser_health()
-
-# Print banner with status
+# Print banner
 print("\033[38;5;245m")
 print("    ╔═╗╔═╗╔═╗╔═╗╔╦╗╔═╗╦═╗")
 print("    ╚═╗╠═╝║╣ ║   ║ ║╣ ╠╦╝")
 print("    ╚═╝╩  ╚═╝╚═╝ ╩ ╚═╝╩╚═")
-print(f"    \033[38;5;240m{len(NODE_CLASS_MAPPINGS)} nodes | ChatGPT + Grok | stealth automation")
-# Show enabled env vars
+print(f"    \033[38;5;240m{len(NODE_CLASS_MAPPINGS)} nodes | ChatGPT + Grok | stealth automation\033[0m")
+
 env_flags = []
 if is_trace_enabled():
-    env_flags.append("\033[38;5;208m◆ Trace enabled\033[0m")  # orange
-if is_debug_logging_enabled():
-    env_flags.append("\033[38;5;135m⌘ Debug enabled\033[0m")  # purple
+    env_flags.append("\033[38;5;208m◆ Trace\033[0m")
+if is_debug_enabled():
+    env_flags.append("\033[38;5;135m⌘ Debug\033[0m")
 env_str = f"  {'  '.join(env_flags)}" if env_flags else ""
 
-if ready:
-    print(f"    \033[92m● Browser ready{env_str}\033[0m")
-else:
-    print(f"    \033[91;1m▲ {error}\033[0m")
+print(f"    \033[92m● Browser ready{env_str}\033[0m")
 print("\033[0m")

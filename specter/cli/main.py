@@ -27,26 +27,20 @@ def cmd_onboard(args):
         sys.argv.extend(["-o", args.output])
     if args.cookies:
         sys.argv.extend(["-c", args.cookies])
-    if args.localstorage:
-        sys.argv.extend(["-l", args.localstorage])
-    if args.profile:
-        sys.argv.extend(["-p", args.profile])
-    if args.mode:
-        sys.argv.extend(["-m", args.mode])
-    if args.width:
-        sys.argv.extend(["-w", str(args.width)])
-    if args.no_login:
-        sys.argv.append("--no-login")
-    if args.browse:
-        sys.argv.append("--browse")
-    if args.replay:
-        sys.argv.extend(["--replay", args.replay])
     onboard_main()
 
 
 async def cmd_test(args):
     """Run generation tests."""
+    import os
+
     from specter.core.browser import log
+
+    # Handle headless flag via environment (quick way to pass through)
+    if args.headless:
+        os.environ["SPECTER_HEADED"] = "0"
+    else:
+        os.environ["SPECTER_HEADED"] = "1"  # Default to headed for CLI testing
 
     service = args.service
     test_type = args.type
@@ -74,7 +68,7 @@ async def cmd_test(args):
 
     if service == "grok":
         if test_type == "i2v":
-            from specter.providers.grok import imagine_i2v
+            from specter.providers.grok_video import imagine_i2v
 
             log("Testing Grok image-to-video", "●")
             log(f"Image: {image_path}", "○")
@@ -91,7 +85,7 @@ async def cmd_test(args):
                 sys.exit(1)
 
         elif test_type == "i2i":
-            from specter.providers.grok import imagine_edit
+            from specter.providers.grok_video import imagine_edit
 
             log("Testing Grok image-to-image", "●")
             log(f"Image: {image_path}", "○")
@@ -108,7 +102,7 @@ async def cmd_test(args):
                 sys.exit(1)
 
         elif test_type == "t2i":
-            from specter.providers.grok import imagine_t2i
+            from specter.providers.grok_t2i import imagine_t2i
 
             if not prompt:
                 print("Error: t2i requires --prompt")
@@ -127,7 +121,7 @@ async def cmd_test(args):
                 sys.exit(1)
 
         elif test_type == "t2v":
-            from specter.providers.grok import imagine_t2v
+            from specter.providers.grok_video import imagine_t2v
 
             if not prompt:
                 print("Error: t2v requires --prompt")
@@ -146,7 +140,7 @@ async def cmd_test(args):
                 sys.exit(1)
 
         elif test_type == "chat":
-            from specter.providers.grok import chat_with_grok
+            from specter.providers.grok_chat import chat_with_grok
 
             if not prompt:
                 print("Error: chat requires --prompt")
@@ -179,21 +173,45 @@ async def cmd_test(args):
             print("Error: chatgpt tests require --prompt")
             sys.exit(1)
 
-        log("Testing ChatGPT chat", "●")
-        log(f"Prompt: {prompt}", "○")
+        if test_type == "t2i":
+            # Image generation mode
+            log("Testing ChatGPT image generation", "●")
+            final_prompt = f"Use image_gen to create: {prompt}"
+            log(f"Prompt: {final_prompt}", "○")
 
-        response, image_bytes = await chat_with_gpt(
-            prompt=prompt,
-            model=args.model or "gpt-4o",
-            image_path=image_path,
-            preview=True,
-        )
+            response, image_bytes = await chat_with_gpt(
+                prompt=final_prompt,
+                model=args.model or "gpt-4o",
+                image_path=image_path,
+                preview=True,
+                _expect_image=True,
+            )
 
-        log(f"Response: {response[:200]}..." if len(response) > 200 else f"Response: {response}", "✓")
-        if image_bytes:
-            output = Path(args.output or "test_chatgpt_image.png")
-            output.write_bytes(image_bytes)
-            log(f"Image saved to {output}", "✓")
+            if image_bytes:
+                output = Path(args.output or "test_chatgpt_t2i.png")
+                output.write_bytes(image_bytes)
+                log(f"Image saved to {output} ({len(image_bytes) // 1024}KB)", "✓")
+            else:
+                log("No image returned", "✗")
+                log(f"Response: {response[:200]}", "○")
+                sys.exit(1)
+        else:
+            # Chat mode
+            log("Testing ChatGPT chat", "●")
+            log(f"Prompt: {prompt}", "○")
+
+            response, image_bytes = await chat_with_gpt(
+                prompt=prompt,
+                model=args.model or "gpt-4o",
+                image_path=image_path,
+                preview=True,
+            )
+
+            log(f"Response: {response[:200]}..." if len(response) > 200 else f"Response: {response}", "✓")
+            if image_bytes:
+                output = Path(args.output or "test_chatgpt_image.png")
+                output.write_bytes(image_bytes)
+                log(f"Image saved to {output}", "✓")
 
     else:
         print(f"Error: Unknown service '{service}'")
@@ -237,7 +255,7 @@ async def cmd_diagnose(args):
         """)
     else:
         # Use actual browser_utils
-        pw, ctx, page, _ = await launch_browser(service)
+        pw, ctx, page, *_ = await launch_browser(service)
 
         if args.clear_cookies:
             print("[*] Clearing cookies...")
@@ -271,7 +289,8 @@ async def cmd_diagnose(args):
 
     if args.fresh:
         await ctx.close()
-        await pw.stop()
+        if pw:
+            await pw.stop()
     else:
         await close_browser(pw, ctx)
     print("[*] Done")
@@ -281,7 +300,7 @@ async def cmd_watch(args):
     """Watch API traffic."""
     import json
 
-    from specter.core.browser import close_browser, launch_browser, log
+    from specter.core.browser import close_browser, create_browser, log
 
     service = args.service
     sites = {
@@ -350,7 +369,7 @@ async def cmd_watch(args):
 
     log(f"Starting {service.upper()} API watcher...", "●")
 
-    playwright, context, page, _ = await launch_browser(service, viewport={"width": 800, "height": 600}, headless=False)
+    playwright, _, context, page = await create_browser(headed=True, viewport={"width": 800, "height": 600})
     page.on("request", on_request)
     page.on("response", on_response)
 
@@ -379,7 +398,7 @@ async def cmd_step(args):
     import asyncio
     from datetime import datetime
 
-    from specter.core.browser import launch_browser
+    from specter.core.browser import close_browser, create_browser
 
     image_path = args.image
     prompt = args.prompt or "turn into cat"
@@ -400,7 +419,7 @@ async def cmd_step(args):
 
     flog("=== IMG2IMG DEBUG SESSION ===\n")
 
-    playwright, context, page, _ = await launch_browser("grok", viewport={"width": 767, "height": 1300}, headless=False)
+    playwright, _, context, page = await create_browser(headed=True, viewport={"width": 767, "height": 1300})
 
     # Combined route handler
     import json
@@ -502,8 +521,7 @@ async def cmd_step(args):
 
     flog("\n>>> DONE - check debug_requests.log")
     log_file.close()
-    await context.close()
-    await playwright.stop()
+    await close_browser(playwright, context)
 
 
 def main():
@@ -528,24 +546,18 @@ Examples:
     onboard_parser = subparsers.add_parser("onboard", help="Onboard new AI provider")
     onboard_parser.add_argument("url", nargs="?", help="URL of the AI provider")
     onboard_parser.add_argument("-o", "--output", help="Output directory")
-    onboard_parser.add_argument("-c", "--cookies", metavar="FILE", help="Cookie file")
-    onboard_parser.add_argument("-l", "--localstorage", metavar="FILE", help="localStorage JSON file")
-    onboard_parser.add_argument("-p", "--profile", metavar="DIR", help="Browser profile directory")
-    onboard_parser.add_argument("-m", "--mode", choices=["text", "image", "video"], default="text")
-    onboard_parser.add_argument("-w", "--width", type=int, default=767)
-    onboard_parser.add_argument("--no-login", action="store_true", help="Skip login step")
-    onboard_parser.add_argument("--browse", action="store_true", help="Browse mode only")
-    onboard_parser.add_argument("--replay", metavar="HAR_FILE", help="Replay HAR file")
+    onboard_parser.add_argument("-c", "--cookies", help="Cookie file (JSON or Netscape TXT)")
 
     # Test command
     test_parser = subparsers.add_parser("test", help="Test generation capabilities")
     test_parser.add_argument("service", choices=["grok", "chatgpt"], help="Service to test")
-    test_parser.add_argument("type", choices=["i2v", "i2i", "t2i", "t2v", "chat"], help="Test type")
+    test_parser.add_argument("type", choices=["i2v", "i2i", "t2i", "t2v", "chat"], help="Test type (chatgpt supports: chat, t2i)")
     test_parser.add_argument("-i", "--image", metavar="PATH", help="Input image path")
     test_parser.add_argument("-p", "--prompt", help="Prompt text")
     test_parser.add_argument("-o", "--output", help="Output file path")
     test_parser.add_argument("-m", "--model", help="Model to use")
     test_parser.add_argument("-a", "--aspect-ratio", default="2:3", help="Aspect ratio (default: 2:3)")
+    test_parser.add_argument("--headless", action="store_true", help="Run browser in headless mode")
 
     # Diagnose command
     diagnose_parser = subparsers.add_parser("diagnose", help="Browser compatibility testing")

@@ -82,6 +82,54 @@ def temp_image(tensor_or_none):
 
 
 @contextmanager
+def temp_images(tensor_or_none):
+    """Context manager for temporary image files from batch tensor.
+
+    Handles both single images and batches (B, H, W, C).
+
+    Usage:
+        with temp_images(image_tensor) as paths:
+            # paths is empty list if tensor was None
+            # paths is list of temp file paths if tensor was provided
+            for path in paths:
+                await paste_image(path)
+        # Files automatically cleaned up
+    """
+    if tensor_or_none is None:
+        yield []
+        return
+
+    paths = []
+    tensor = tensor_or_none
+
+    # Get batch size
+    if tensor.dim() == 3:
+        # Single image (H, W, C) - wrap in batch
+        tensor = tensor.unsqueeze(0)
+
+    batch_size = tensor.shape[0]
+
+    try:
+        for i in range(batch_size):
+            img_tensor = tensor[i]
+            arr = (img_tensor.cpu().numpy() * 255).astype(np.uint8)
+            pil_img = Image.fromarray(arr)
+
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                pil_img.save(f.name)
+                paths.append(f.name)
+
+        yield paths
+    finally:
+        for path in paths:
+            if os.path.exists(path):
+                try:
+                    os.unlink(path)
+                except:
+                    pass
+
+
+@contextmanager
 def temp_video(video_bytes: bytes, suffix=".mp4"):
     """Context manager for temporary video file from bytes.
 

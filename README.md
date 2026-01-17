@@ -17,7 +17,7 @@ https://github.com/user-attachments/assets/ffbe5846-24ae-4c7c-a393-4b504e196287
 ```mermaid
 flowchart LR
     A[ComfyUI Workflow] --> B[Specter Node]
-    B --> C[Firefox Browser]
+    B --> C[Chrome Browser]
     C --> D{Provider}
     D --> E[ChatGPT]
     D --> F[Grok]
@@ -54,6 +54,7 @@ Already paying for ChatGPT Plus/Pro or X Premium? Use those features in ComfyUI 
    ```cmd
    cd ComfyUI-Specter
    pip install -r requirements.txt
+   patchright install chrome
    ```
 
 3. Restart ComfyUI
@@ -70,8 +71,7 @@ Already paying for ChatGPT Plus/Pro or X Premium? Use those features in ComfyUI 
    ```bash
    cd ComfyUI-Specter
    pip install -r requirements.txt
-   # Linux only: install browser system dependencies
-   sudo playwright install-deps firefox
+   patchright install chrome
    ```
 
 3. Restart ComfyUI
@@ -162,9 +162,9 @@ Generate detailed descriptions from images.
 
 ## Troubleshooting
 
-- **"Missing system dependencies"** - Run `sudo playwright install-deps` to install required libraries
+- **"Missing system dependencies"** - Run `patchright install chrome` to install the browser
 - **Session expired?** Go to Settings > Specter > Authentication and click Sign In
-- **Browser not closing?** Check for zombie Firefox processes
+- **Browser not closing?** Check for zombie Chrome processes
 - **Login loop?** Delete session via Settings > Specter or remove `user_data/` folder
 
 ## Coming Soon

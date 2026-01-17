@@ -45,6 +45,15 @@
           "edit_prefix": "Edit this image:"
         }
       ]
+    },
+    "gemini": {
+      "name": "Gemini",
+      "url": "https://gemini.google.com",
+      "models": [
+        {"id": "gemini-1.5-flash", "name": "gemini-1.5-flash", "default": true},
+        {"id": "gemini-3.0-flash", "name": "gemini-3.0-flash"},
+        {"id": "gemini-3.0-pro", "name": "gemini-3.0-pro"}
+      ]
     }
   },
   "image_sizes": [

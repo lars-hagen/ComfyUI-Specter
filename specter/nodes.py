@@ -21,14 +21,55 @@ from .core.utils import (
     empty_image_tensor,
     extract_last_frame_from_video,
     temp_image,
+    temp_images,
     video_to_bytes,
 )
 from .providers.chatgpt import chat_with_gpt
-from .providers.grok import SIZES, VIDEO_MODES, chat_with_grok, imagine_edit, imagine_i2v, imagine_t2i, imagine_t2v
+from .providers.gemini import chat_with_gemini
+from .providers.grok_chat import chat_with_grok
+from .providers.grok_t2i import imagine_t2i
+from .providers.grok_video import SIZES, VIDEO_MODES, imagine_edit, imagine_i2v, imagine_t2v
 
 # Size names for Grok Imagine
 GROK_SIZES = list(SIZES.keys())
 GROK_MODES = list(VIDEO_MODES.keys())
+
+
+# =============================================================================
+# UTILITY NODES
+# =============================================================================
+
+
+class LoadFilesNode:
+    """Load files from disk for use with AI chat nodes."""
+
+    DISPLAY_NAME = "Load Files"
+    CATEGORY = "Specter/utils"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "file_path": ("STRING", {"default": "", "tooltip": "Path to file (PDF, TXT, etc). Supports comma-separated paths."}),
+            },
+        }
+
+    RETURN_TYPES = ("SPECTER_FILES",)
+    RETURN_NAMES = ("files",)
+    FUNCTION = "run"
+
+    def run(self, file_path: str):
+        import os
+
+        paths = []
+        for p in file_path.split(","):
+            p = p.strip()
+            if p and os.path.exists(p):
+                paths.append(p)
+            elif p:
+                print(f"[Specter] Warning: File not found: {p}")
+
+        return (paths,)
 
 
 # =============================================================================
@@ -39,8 +80,8 @@ GROK_MODES = list(VIDEO_MODES.keys())
 class ChatGPTTextNode:
     """Text chat with ChatGPT."""
 
-    DISPLAY_NAME = "ChatGPT Text"
-    CATEGORY = "Specter/text/ChatGPT"
+    DISPLAY_NAME = "OpenAI ChatGPT"
+    CATEGORY = "Specter/text/OpenAI"
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -80,8 +121,8 @@ class ChatGPTTextNode:
 class ChatGPTImageNode:
     """Image generation with ChatGPT."""
 
-    DISPLAY_NAME = "ChatGPT Image"
-    CATEGORY = "Specter/image/ChatGPT"
+    DISPLAY_NAME = "OpenAI GPT Image 1"
+    CATEGORY = "Specter/image/OpenAI"
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -126,6 +167,102 @@ class ChatGPTImageNode:
 
 
 # =============================================================================
+# GEMINI NODES
+# =============================================================================
+
+
+class GeminiTextNode:
+    """Multimodal chat with Gemini."""
+
+    DISPLAY_NAME = "Google Gemini"
+    CATEGORY = "Specter/text/Google"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        models = get_models("gemini") or ["gemini-1.5-flash"]
+        return {
+            "required": {
+                "prompt": ("STRING", {"multiline": True, "default": "", "tooltip": TOOLTIPS["prompt"]}),
+                "model": (models, {"default": models[0], "tooltip": TOOLTIPS["model"]}),
+            },
+            "optional": {
+                "images": ("IMAGE", {"tooltip": "Images to include (single or batch)."}),
+                "audio": ("AUDIO", {"tooltip": "Audio file to include."}),
+                "video": ("VIDEO", {"tooltip": "Video file to include."}),
+                "files": ("SPECTER_FILES", {"forceInput": True, "tooltip": "Files to include (from Load Files node)."}),
+                "preview": ("BOOLEAN", {"default": False, "tooltip": "Show browser preview."}),
+                "system_prompt": ("STRING", {"multiline": True, "tooltip": "System instructions injected into request."}),
+            },
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("response",)
+    FUNCTION = "run"
+
+    async def run(self, prompt: str, model: str, images=None, audio=None, video=None, files=None, system_prompt=None, preview: bool = False):
+        import os
+        import tempfile
+
+        from comfy.utils import ProgressBar
+
+        temp_files = []
+        try:
+            with temp_images(images) as image_paths:
+                # Handle AUDIO type (dict with waveform tensor and sample_rate)
+                audio_path = None
+                if audio:
+                    if isinstance(audio, dict) and "waveform" in audio:
+                        # Convert audio tensor to MP3 file
+                        from comfy_api_nodes.util.conversions import audio_input_to_mp3
+                        mp3_bytes = audio_input_to_mp3(audio)  # type: ignore[arg-type]
+                        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+                            f.write(mp3_bytes.read())
+                            audio_path = f.name
+                            temp_files.append(audio_path)
+                    elif isinstance(audio, dict) and "path" in audio:
+                        audio_path = audio["path"]
+                    elif isinstance(audio, str):
+                        audio_path = audio
+
+                # Handle VIDEO type (can be dict, str, or VideoFromFile with save_to)
+                video_path = None
+                if video:
+                    if isinstance(video, dict) and "filename" in video:
+                        video_path = video["filename"]
+                    elif isinstance(video, str):
+                        video_path = video
+                    elif hasattr(video, "save_to"):
+                        # VideoFromFile - save to temp file
+                        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
+                            temp_video_path = f.name
+                        video.save_to(temp_video_path)  # type: ignore[union-attr]
+                        video_path = temp_video_path
+                        temp_files.append(temp_video_path)
+
+                # Handle files input (SPECTER_FILES = list of paths from Load Files node)
+                file_paths = list(files) if files else []
+
+                pbar = ProgressBar(100)
+                text = await chat_with_gemini(
+                    prompt, model,
+                    image_paths=image_paths,
+                    audio_path=audio_path,
+                    video_path=video_path,
+                    file_paths=file_paths,
+                    system_prompt=system_prompt.strip() if system_prompt else None,
+                    pbar=pbar, preview=preview
+                )
+                return (text,)
+        finally:
+            for f in temp_files:
+                if os.path.exists(f):
+                    try:
+                        os.unlink(f)
+                    except:
+                        pass
+
+
+# =============================================================================
 # GROK NODES
 # =============================================================================
 
@@ -133,8 +270,8 @@ class ChatGPTImageNode:
 class GrokTextNode:
     """Text chat with Grok."""
 
-    DISPLAY_NAME = "Grok Text"
-    CATEGORY = "Specter/text/Grok"
+    DISPLAY_NAME = "xAI Grok"
+    CATEGORY = "Specter/text/xAI"
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -174,8 +311,8 @@ class GrokTextNode:
 class GrokImageNode:
     """Image generation with Grok Imagine."""
 
-    DISPLAY_NAME = "Grok Image"
-    CATEGORY = "Specter/image/Grok"
+    DISPLAY_NAME = "xAI Grok Imagine"
+    CATEGORY = "Specter/image/xAI"
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -211,8 +348,8 @@ class GrokImageNode:
 class GrokImageEditNode:
     """Image editing with Grok Imagine."""
 
-    DISPLAY_NAME = "Grok Image Edit"
-    CATEGORY = "Specter/image/Grok"
+    DISPLAY_NAME = "xAI Grok Imagine Edit"
+    CATEGORY = "Specter/image/xAI"
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -247,8 +384,8 @@ class GrokImageEditNode:
 class GrokTextToVideoNode:
     """Text-to-video generation with Grok Imagine."""
 
-    DISPLAY_NAME = "Grok Text to Video"
-    CATEGORY = "Specter/video/Grok"
+    DISPLAY_NAME = "xAI Grok Imagine Video"
+    CATEGORY = "Specter/video/xAI"
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -290,8 +427,8 @@ class GrokTextToVideoNode:
 class GrokImageToVideoNode:
     """Image-to-video generation with Grok Imagine."""
 
-    DISPLAY_NAME = "Grok Image to Video"
-    CATEGORY = "Specter/video/Grok"
+    DISPLAY_NAME = "xAI Grok Imagine Video I2V"
+    CATEGORY = "Specter/video/xAI"
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -464,8 +601,8 @@ def _create_image_describer(provider: str, display_prefix: str, chat_fn, default
 class GrokVideoCombineNode:
     """Combine two Grok videos sequentially for extended generation."""
 
-    DISPLAY_NAME = "Grok Video Combine"
-    CATEGORY = "Specter/video/Grok"
+    DISPLAY_NAME = "xAI Grok Video Combine"
+    CATEGORY = "Specter/video/xAI"
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -493,10 +630,10 @@ class GrokVideoCombineNode:
 
 
 # Generate utility nodes for both providers
-PromptEnhancerNode = _create_prompt_enhancer("chatgpt", "ChatGPT", chat_with_gpt, "gpt-5-2-instant")
-GrokPromptEnhancerNode = _create_prompt_enhancer("grok", "Grok", chat_with_grok, "grok-3")
-ImageDescriberNode = _create_image_describer("chatgpt", "ChatGPT", chat_with_gpt, "gpt-5-2-instant")
-GrokImageDescriberNode = _create_image_describer("grok", "Grok", chat_with_grok, "grok-3")
+PromptEnhancerNode = _create_prompt_enhancer("chatgpt", "OpenAI", chat_with_gpt, "gpt-5-2-instant")
+GrokPromptEnhancerNode = _create_prompt_enhancer("grok", "xAI Grok", chat_with_grok, "grok-3")
+ImageDescriberNode = _create_image_describer("chatgpt", "OpenAI", chat_with_gpt, "gpt-5-2-instant")
+GrokImageDescriberNode = _create_image_describer("grok", "xAI Grok", chat_with_grok, "grok-3")
 
 
 # =============================================================================

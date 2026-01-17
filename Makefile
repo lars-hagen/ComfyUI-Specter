@@ -12,11 +12,11 @@ fix:
 	uvx ruff check --fix .
 
 typecheck:
-	uvx pyright .
+	uvx pyright specter/
 
 check:
 	uvx ruff check .
-	uvx pyright .
+	uvx pyright specter/
 
 imports:
 	@echo "Checking for circular imports..."

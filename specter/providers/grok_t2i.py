@@ -4,8 +4,8 @@ import asyncio
 import base64
 import time
 
-from ...core.browser import BrowserSession, ProgressTracker, log
-from .imagine import SIZES, _check_errors, _log_image_info, _setup_imagine_page
+from ..core.browser import ProgressTracker, capture_preview, close_browser, launch_browser, log
+from .grok_video import SIZES, _check_errors, _log_image_info, _setup_imagine_page
 
 
 def _calc_viewport(size: str, max_images: int) -> dict:
@@ -33,29 +33,31 @@ async def imagine_t2i(
     viewport = _calc_viewport(size, max_images)
     _, expected_res = SIZES.get(size, ([1, 1], "960x960"))
 
-    async with BrowserSession("grok", viewport=viewport, error_context="grok-imagine-t2i") as browser:
-        await _setup_imagine_page(browser, size, video=False)
+    playwright, context, page, *_ = await launch_browser("grok")
+
+    try:
+        await _setup_imagine_page(page, size, video=False)
 
         log(f"Settings: {max_images} images, {expected_res}, viewport {viewport['width']}x{viewport['height']}", "○")
         log(f"Prompt: {prompt[:60]}..." if len(prompt) > 60 else f"Prompt: {prompt}", "✎")
         progress.update(30)
 
-        textarea = browser.page.locator(".tiptap")
+        textarea = page.locator(".tiptap")
 
         # Count existing buttons BEFORE submitting (may have leftover from previous session)
-        existing_buttons = await browser.page.evaluate(
+        existing_buttons = await page.evaluate(
             """() => document.querySelectorAll('button[aria-label="Make video"]').length"""
         )
         if existing_buttons > 0:
             log(f"Found {existing_buttons} existing image(s) from previous session", "○")
 
         await textarea.fill(prompt)
-        await browser.page.locator('button[aria-label="Submit"]').click()
+        await page.locator('button[aria-label="Submit"]').click()
         progress.update(40)
 
         # Wait for NEW "Make video" buttons (count must increase by max_images)
         target_count = existing_buttons + max_images
-        await browser.page.wait_for_function(
+        await page.wait_for_function(
             """(targetCount) => {
             const buttons = document.querySelectorAll('button[aria-label="Make video"]');
             return buttons.length >= targetCount;
@@ -63,7 +65,7 @@ async def imagine_t2i(
             arg=target_count,
             timeout=60000,
         )
-        await _check_errors(browser.page)
+        await _check_errors(page)
 
         # Wait for images to finish loading (base64 loads progressively: preview → full quality)
         # Use stability check: if sizes stop changing, images are done loading
@@ -78,7 +80,7 @@ async def imagine_t2i(
         while time.time() - wait_start < 40:
             try:
                 # Check if images meet quality threshold
-                await browser.page.wait_for_function(
+                await page.wait_for_function(
                     """({maxImages, minWidth, minHeight, minSrcLength}) => {
                     const buttons = Array.from(document.querySelectorAll('button[aria-label="Make video"]'));
                     const images = buttons.slice(0, maxImages).map(btn => {
@@ -106,7 +108,7 @@ async def imagine_t2i(
                 break
             except Exception:
                 # Check stability: if sizes AND dimensions haven't changed for 3 checks, consider loaded
-                current_state = await browser.page.evaluate(
+                current_state = await page.evaluate(
                     """({maxImages, minWidth, minHeight}) => {
                     const buttons = Array.from(document.querySelectorAll('button[aria-label="Make video"]'));
                     return buttons.slice(0, maxImages).map(btn => {
@@ -140,10 +142,12 @@ async def imagine_t2i(
 
             elapsed = time.time() - wait_start
             if elapsed - last_error_check >= 3:
-                await _check_errors(browser.page)
+                await _check_errors(page)
                 last_error_check = elapsed
-            if elapsed - last_preview >= 3:
-                await browser.update_preview_if_enabled(progress)
+            if elapsed - last_preview >= 3 and progress.preview:
+                preview_img = await capture_preview(page)
+                if preview_img:
+                    progress.update(progress.current, preview_img)
                 last_preview = elapsed
             await asyncio.sleep(1)
 
@@ -154,7 +158,7 @@ async def imagine_t2i(
         progress.update(90)
 
         # Extract images using the "Make video" button as selector
-        image_data = await browser.page.evaluate(
+        image_data = await page.evaluate(
             """(maxImages) => {
             const buttons = Array.from(document.querySelectorAll('button[aria-label="Make video"]'));
             return buttons.slice(0, maxImages).map(btn => {
@@ -215,3 +219,5 @@ async def imagine_t2i(
                 pass
         progress.update(100)
         return images
+    finally:
+        await close_browser(playwright, context)

@@ -3,18 +3,24 @@ import json
 from aiohttp import web
 from server import PromptServer
 
-from .browser import browser_stream
-from .core.browser import check_browser_health, log
-from .core.debug import load_settings, save_settings
-from .core.session import delete_session, load_session, parse_cookies, save_session
-from .providers.chatgpt import ChatGPTService
-from .providers.grok import GrokService
+from .core.browser import (
+    DARK_THEME_SCRIPT,
+    delete_session,
+    load_session,
+    load_settings,
+    log,
+    parse_cookies,
+    save_session,
+    save_settings,
+)
+from .login_stream import browser_stream
+from .providers import AGE_VERIFICATION_SCRIPT, DISMISS_NOTIFICATIONS_SCRIPT, GROK_LOGIN_SELECTORS
 
 
 def _error_response(error: Exception, context: str):
     error_str = str(error)
     if error_str and "install-deps" in error_str:
-        msg = "Missing system dependencies. Run: sudo playwright install-deps"
+        msg = "Browser not installed. Run: patchright install chrome"
     elif error_str:
         msg = error_str.split("\n")[0].strip()
     else:
@@ -23,48 +29,52 @@ def _error_response(error: Exception, context: str):
     return web.json_response({"status": "error", "message": msg}, status=500)
 
 
-# Map service names to provider classes
-SERVICE_PROVIDERS = {
-    "chatgpt": ChatGPTService,
-    "grok": GrokService,
-}
-
-# Login-specific config (URLs and success patterns - not duplicated in providers)
-LOGIN_CONFIGS = {
+# Service configs for login flows
+SERVICE_CONFIGS = {
     "chatgpt": {
+        "service": "chatgpt",
         "login_url": "https://chatgpt.com/auth/login",
+        "login_selectors": ['button:has-text("Log in")', 'a:has-text("Log in")', 'button:has-text("Sign up")'],
         "success_url_contains": "chatgpt.com",
         "success_url_excludes": "/auth/",
         "workspace_selector": '[data-testid="modal-workspace-switcher"]',
         "settings_url": "https://chatgpt.com/#settings",
+        "init_scripts": [DARK_THEME_SCRIPT, "localStorage.removeItem('RESUME_TOKEN_STORE_KEY');"],
+        "cookies": [{"name": "oai-allow-ne", "value": "true", "domain": ".chatgpt.com", "path": "/"}],
     },
     "grok": {
+        "service": "grok",
         "login_url": "https://accounts.x.ai/sign-in?redirect=grok-com",
+        "login_selectors": GROK_LOGIN_SELECTORS,
         "success_url_contains": "grok.com",
         "success_url_excludes": "/sign-in",
         "workspace_selector": None,
         "settings_url": "https://grok.com/imagine?_s=home",
+        "init_scripts": [DARK_THEME_SCRIPT, AGE_VERIFICATION_SCRIPT, DISMISS_NOTIFICATIONS_SCRIPT],
+        "cookies": [],
+    },
+    "gemini": {
+        "service": "gemini",
+        "login_url": "https://accounts.google.com/ServiceLogin?passive=1209600&continue=https://gemini.google.com/app&followup=https://gemini.google.com/app",
+        "login_selectors": ['input[type="email"]', 'input[type="password"]'],
+        "success_url_contains": "gemini.google.com/app",
+        "success_url_excludes": "accounts.google.com",
+        "workspace_selector": None,
+        "settings_url": "https://gemini.google.com/app",
+        "init_scripts": [DARK_THEME_SCRIPT],
+        "cookies": [],
     },
 }
 
 
 def get_service_config(service: str) -> dict:
-    if service not in SERVICE_PROVIDERS:
+    if service not in SERVICE_CONFIGS:
         raise ValueError(f"Unknown service: {service}")
-    provider_class = SERVICE_PROVIDERS[service]
-    login_cfg = LOGIN_CONFIGS[service]
-    provider_cfg = provider_class.config
+    return SERVICE_CONFIGS[service]
 
-    return {
-        "service": provider_cfg.service_name,
-        "login_url": login_cfg["login_url"],
-        "login_selectors": provider_cfg.login_selectors,
-        "success_url_contains": login_cfg["success_url_contains"],
-        "success_url_excludes": login_cfg["success_url_excludes"],
-        "workspace_selector": login_cfg.get("workspace_selector"),
-        "init_scripts": provider_cfg.init_scripts,
-        "cookies": provider_cfg.cookies,
-    }
+
+def check_browser_health() -> tuple[bool, str | None]:
+    return True, None
 
 
 @PromptServer.instance.routes.get("/specter/health")
@@ -84,10 +94,12 @@ async def get_service_status(request):
 @PromptServer.instance.routes.post("/specter/{service}/logout")
 async def trigger_service_logout(request):
     service = request.match_info["service"]
-    result = delete_session(service)
-    if result["errors"]:
-        return web.json_response({"status": "partial", "deleted": result, "message": "; ".join(result["errors"])})
-    return web.json_response({"status": "ok", "deleted": result})
+    # Close browser if running for this service
+    if browser_stream.current_service == service and browser_stream.session_id:
+        log(f"Closing browser before logout for {service}", "○")
+        await browser_stream.stop()
+    deleted = delete_session(service)
+    return web.json_response({"status": "ok", "deleted": deleted})
 
 
 @PromptServer.instance.routes.post("/specter/{service}/import")
@@ -107,16 +119,9 @@ async def import_cookies(request):
 
 @PromptServer.instance.routes.post("/specter/reset")
 async def reset_all_data(_request):
-    """Clear all session and profile data for all services."""
-    results = {}
-    errors = []
-    for service in SERVICE_PROVIDERS:
-        result = delete_session(service)
-        results[service] = result
-        errors.extend(result["errors"])
-    if errors:
-        return web.json_response({"status": "partial", "results": results, "message": "; ".join(errors)})
-    return web.json_response({"status": "ok", "results": results})
+    """Clear all session data for all services."""
+    results = {service: delete_session(service) for service in SERVICE_CONFIGS}
+    return web.json_response({"status": "ok", "deleted": results})
 
 
 @PromptServer.instance.routes.post("/specter/{service}/browser/start")
@@ -126,6 +131,7 @@ async def start_service_browser(request):
     if not ready:
         return web.json_response({"status": "error", "message": error}, status=500)
     config = get_service_config(service)
+
     try:
         await browser_stream.start(
             url=config["login_url"],
@@ -142,15 +148,16 @@ async def start_service_browser(request):
 @PromptServer.instance.routes.post("/specter/{service}/settings/start")
 async def start_service_settings(request):
     service = request.match_info["service"]
-    if service not in LOGIN_CONFIGS:
+    if service not in SERVICE_CONFIGS:
         return web.json_response({"status": "error", "message": f"Unknown service: {service}"}, status=400)
     ready, error = check_browser_health()
     if not ready:
         return web.json_response({"status": "error", "message": error}, status=500)
-    settings_url = LOGIN_CONFIGS[service].get("settings_url")
+    settings_url = SERVICE_CONFIGS[service].get("settings_url")
     if not settings_url:
         return web.json_response({"status": "error", "message": f"No settings URL for {service}"}, status=400)
     config = get_service_config(service)
+
     try:
         await browser_stream.start(
             url=settings_url,
@@ -165,18 +172,15 @@ async def start_service_settings(request):
 
 
 @PromptServer.instance.routes.post("/specter/browser/stop")
-async def stop_browser(_request):
+async def stop_browser(request):
+    session_id = browser_stream.session_id
+    sid = session_id[:8] if session_id else "none"
     try:
-        service = browser_stream.current_service or "default"
-        if await browser_stream.is_logged_in():
-            storage: dict = await browser_stream.get_storage_state()  # type: ignore
-            if storage:
-                save_session(service, storage)
-                cookie_count = len(storage.get("cookies", []))
-                log(f"Login successful! Session saved for {service.title()} ({cookie_count} cookies)", "★")
+        log(f"[{sid}] Stop requested from frontend ({request.remote})", "○")
         await browser_stream.stop()
         return web.json_response({"status": "ok"})
     except Exception as e:
+        log(f"[{sid}] Stop browser error: {e}", "✕")
         return _error_response(e, "stopping browser")
 
 

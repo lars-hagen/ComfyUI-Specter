@@ -1,6 +1,7 @@
 # User data (sessions, browser profiles)
 user_data/
-.claude/CLAUDE.md
+downloaded_files/
+.claude/
 
 # Internals documentation
 internals/
