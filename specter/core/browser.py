@@ -55,31 +55,31 @@ def debug_log(msg: str):
 
 
 # Chrome args for speed and stealth
+# Note: Some flags commented out as they may interfere with Cloudflare Turnstile autosolve
 CHROME_ARGS = [
     "--disable-blink-features=AutomationControlled",
     "--disable-gpu",
-    "--disable-background-timer-throttling",
-    "--disable-backgrounding-occluded-windows",
-    "--disable-renderer-backgrounding",
-    "--disable-ipc-flooding-protection",
-    "--disable-hang-monitor",
-    "--disable-features=CalculateNativeWinOcclusion,Translate,MediaRouter,OptimizationHints",
-    "--disable-background-networking",
-    "--disable-breakpad",
-    "--disable-component-update",
-    "--disable-domain-reliability",
-    "--disable-client-side-phishing-detection",
-    "--disable-sync",
-    "--disable-extensions",
-    "--metrics-recording-only",
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--deny-permission-prompts",
-    "--disable-notifications",
-    "--noerrdialogs",
-    "--mute-audio",
-    "--force-dark-mode",
-    "--enable-features=WebUIDarkMode",
+    "--disable-software-rasterizer",
+    # "--disable-background-timer-throttling",
+    # "--disable-backgrounding-occluded-windows",
+    # "--disable-renderer-backgrounding",
+    # "--disable-ipc-flooding-protection",
+    # "--disable-hang-monitor",
+    # "--disable-features=CalculateNativeWinOcclusion,Translate,MediaRouter,OptimizationHints",
+    # "--disable-background-networking",
+    # "--disable-breakpad",
+    # "--disable-component-update",
+    # "--disable-domain-reliability",
+    # "--disable-client-side-phishing-detection",
+    # "--disable-sync",
+    # "--disable-extensions",
+    # "--metrics-recording-only",
+    # "--no-first-run",
+    # "--no-default-browser-check",
+    # "--deny-permission-prompts",
+    # "--disable-notifications",
+    # "--noerrdialogs",
+    "--mute-audio"
 ]
 
 VIEWPORT: ViewportSize = {"width": 767, "height": 1020}
@@ -184,6 +184,7 @@ async def launch_browser(service: str, headed: bool | None = None):
         service_workers="block",
         bypass_csp=True,
     )
+    # CRITICAL: Disable Patchright's route injection to prevent cross-domain navigation errors
     context._impl_obj.route_injecting = True
 
     # Start trace if enabled
@@ -242,6 +243,7 @@ async def create_browser(headed: bool = True, viewport: ViewportSize | None = No
         service_workers="block",
         bypass_csp=True,
     )
+    # CRITICAL: Disable Patchright's route injection to prevent cross-domain navigation errors
     context._impl_obj.route_injecting = True
     page = await context.new_page()
     await page.add_init_script(DARK_THEME_SCRIPT)

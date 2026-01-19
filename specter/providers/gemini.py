@@ -47,6 +47,7 @@ async def chat_with_gemini(
     system_prompt: str | None = None,
     pbar=None,
     preview: bool = False,
+    disable_image_gen: bool = False,
 ) -> str:
     """Send message to Gemini and return response text."""
     progress = ProgressTracker(pbar, preview)
@@ -71,12 +72,12 @@ async def chat_with_gemini(
         log("Connected to Gemini", "●")
         progress.update(20)
 
-        # Set up request interception to inject system prompt
-        if system_prompt:
+        # Set up request interception to inject system prompt and/or disable image gen
+        if system_prompt or disable_image_gen:
             import json
             from urllib.parse import parse_qs, urlencode
 
-            async def inject_system_prompt(route):
+            async def modify_request(route):
                 request = route.request
                 body = request.post_data or ""
 
@@ -87,9 +88,20 @@ async def chat_with_gemini(
                         outer = json.loads(freq)
                         if outer and len(outer) > 1 and outer[1]:
                             inner = json.loads(outer[1])
-                            if inner and len(inner) > 0 and inner[0] and len(inner[0]) > 0:
+                            modified = False
+
+                            # Inject system prompt into message
+                            if system_prompt and inner and len(inner) > 0 and inner[0] and len(inner[0]) > 0:
                                 original_msg = inner[0][0]
                                 inner[0][0] = f"<system_instructions>\n{system_prompt}\n</system_instructions>\n\n{original_msg}"
+                                modified = True
+
+                            # Disable image generation focus (index 49 = image focus flag)
+                            if disable_image_gen and len(inner) > 49:
+                                inner[49] = None
+                                modified = True
+
+                            if modified:
                                 outer[1] = json.dumps(inner)
                                 parsed["f.req"] = [json.dumps(outer)]
                                 body = urlencode(parsed, doseq=True)
@@ -98,7 +110,7 @@ async def chat_with_gemini(
 
                 await route.continue_(post_data=body)
 
-            await page.route("**/StreamGenerate*", inject_system_prompt)
+            await page.route("**/StreamGenerate*", modify_request)
 
         # Select model via UI dropdown
         ui_model = MODEL_TO_UI.get(model)
@@ -168,6 +180,130 @@ async def chat_with_gemini(
         raise
     finally:
         await close_browser(pw, context)
+
+
+async def generate_image_with_gemini(
+    prompt: str,
+    model: str = "gemini-1.5-flash",
+    image_paths: list[str] | None = None,
+    pbar=None,
+    preview: bool = False,
+) -> bytes | None:
+    """Generate image with Gemini and return image bytes."""
+    progress = ProgressTracker(pbar, preview)
+    progress.update(5)
+
+    pw, context, page, _ = await launch_browser("gemini")
+    progress.update(10)
+
+    try:
+        await page.goto("https://gemini.google.com/app", wait_until="domcontentloaded")
+
+        # Wait for prompt input
+        prompt_input = page.locator("rich-textarea .ql-editor[contenteditable='true']")
+        try:
+            await prompt_input.wait_for(timeout=10000)
+        except Exception:
+            raise RuntimeError(
+                "Gemini not ready. Please open gemini.google.com in your browser, "
+                "accept any terms/dialogs, then try again."
+            ) from None
+
+        log("Connected to Gemini", "●")
+        progress.update(20)
+
+        # Select model via UI dropdown
+        ui_model = MODEL_TO_UI.get(model)
+        if ui_model:
+            mode_btn = page.locator("bard-mode-switcher button.input-area-switch")
+            current = (await mode_btn.inner_text()).strip().lower()
+
+            if current != ui_model:
+                log(f"Switching model: {current} → {ui_model}", "◆")
+                await mode_btn.click()
+
+                option = page.locator(f'[data-test-id="bard-mode-option-{ui_model}"]')
+                await option.wait_for(state="visible", timeout=5000)
+                await option.click()
+                await asyncio.sleep(0.3)
+
+        # Upload images if provided
+        if image_paths:
+            log(f"Uploading {len(image_paths)} image(s)...", "↑")
+            await _upload_files(page, image_paths, prompt_input)
+            await asyncio.sleep(2)
+            progress.update(30)
+
+        # Send prompt
+        prompt_preview = prompt[:60] + "..." if len(prompt) > 60 else prompt
+        log(f'Sending: "{prompt_preview}"', "✎")
+        await prompt_input.fill(prompt)
+        await page.keyboard.press("Enter")
+        progress.update(40)
+
+        # Wait for image generation
+        image_bytes = await _wait_for_image(page, progress, preview)
+
+        if image_bytes:
+            log(f"Success: {len(image_bytes) // 1024}KB", "★")
+        else:
+            log("No image captured", "⚠")
+
+        return image_bytes
+
+    except asyncio.CancelledError:
+        log("Interrupted", "✕")
+        raise
+    except Exception as e:
+        log(f"Error: {str(e).split(chr(10))[0]}", "✕")
+        raise
+    finally:
+        await close_browser(pw, context)
+
+
+async def _wait_for_image(page, progress: ProgressTracker, preview: bool) -> bytes | None:
+    """Wait for Gemini to generate an image and capture it."""
+    try:
+        # Wait for response to start
+        await page.wait_for_selector('message-content [aria-busy]', timeout=30000)
+        progress.update(50)
+
+        start = asyncio.get_event_loop().time()
+        last_preview = 0
+
+        while True:
+            elapsed = asyncio.get_event_loop().time() - start
+            if elapsed > 120:
+                break
+
+            progress.update(50 + min(int(elapsed / 3), 40))
+
+            if preview and elapsed - last_preview >= 3:
+                progress.update(50 + min(int(elapsed / 3), 40), await capture_preview(page))
+                last_preview = elapsed
+
+            # Check if response is done
+            done = page.locator('model-response message-content [aria-busy="false"]').last
+            if await done.count() > 0:
+                # Look for generated image in response (googleusercontent.com URLs)
+                img_locator = page.locator('model-response generated-image img.image.loaded').first
+                if await img_locator.count() > 0:
+                    src = await img_locator.get_attribute("src")
+                    if src:
+                        progress.update(95)
+                        if preview:
+                            progress.update(95, await capture_preview(page))
+                        response = await page.request.get(src)
+                        return await response.body()
+                break
+
+            await asyncio.sleep(0.5)
+
+        return None
+
+    except Exception as e:
+        log(f"Image capture failed: {e}", "⚠")
+        return None
 
 
 async def _wait_for_response(page, progress: ProgressTracker, preview: bool, file_count: int = 0) -> str:

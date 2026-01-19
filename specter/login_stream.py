@@ -7,7 +7,10 @@ import uuid
 
 from patchright.async_api import async_playwright
 
-from .core.browser import CHROME_ARGS, USER_AGENT, is_headed, log
+from .core.browser import CHROME_ARGS, is_headed, log
+
+# Auth-specific UA (Chrome 144)
+AUTH_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
 
 
 class BrowserStream:
@@ -58,7 +61,7 @@ class BrowserStream:
                 args=CHROME_ARGS,
             )
             self.context = await self.browser.new_context(
-                user_agent=USER_AGENT,
+                user_agent=AUTH_USER_AGENT,
                 viewport={"width": width, "height": height},
             )
 
@@ -99,7 +102,7 @@ class BrowserStream:
             self.browser_starting = False
 
             log(f"[{self.session_id[:8]}] Navigating to {url[:50]}...", "▸")
-            await self.page.goto(url, timeout=60000, wait_until="commit")
+            await self.page.goto(url, timeout=60000, wait_until="domcontentloaded")
 
             log(f"[{self.session_id[:8]}] Browser ready, streaming...", "▸")
             self._stream_task = asyncio.create_task(self._stream_loop())

@@ -4,7 +4,7 @@
 [![ComfyUI](https://img.shields.io/badge/ComfyUI-Custom_Node-blue)](https://github.com/comfyanonymous/ComfyUI)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 
-**Use ChatGPT and Grok in ComfyUI.** No API keys, no extra costs. Just your existing accounts (even free tiers work).
+**Use ChatGPT, Grok, and Gemini in ComfyUI.** No API keys, no extra costs. Just your existing accounts (even free tiers work).
 
 *Specter is a stealthy browser phantom that automates web interfaces in the background. Headless and invisible.*
 
@@ -21,17 +21,19 @@ flowchart LR
     C --> D{Provider}
     D --> E[ChatGPT]
     D --> F[Grok]
-    E --> G[Generated Content]
-    F --> G
-    G --> A
+    D --> G[Gemini]
+    E --> H[Generated Content]
+    F --> H
+    G --> H
+    H --> A
 
-    C -.-> H[(Session Storage)]
-    H -.-> C
+    C -.-> I[(Session Storage)]
+    I -.-> C
 ```
 
 ## Why Specter?
 
-Already paying for ChatGPT Plus/Pro or X Premium? Use those features in ComfyUI without extra API costs.
+Already paying for ChatGPT Plus/Pro, X Premium, or Google AI Pro/Ultra? Use those features in ComfyUI without extra API costs.
 
 | | API | Your Existing Subscription |
 |---|---|---|
@@ -39,6 +41,7 @@ Already paying for ChatGPT Plus/Pro or X Premium? Use those features in ComfyUI 
 | **GPT-5.2** | $0.88-7/1M tokens | Included |
 | **Grok Image** | $0.01/image | Included |
 | **Grok Video** | No API | Included |
+| **Gemini** | $0.075-0.30/1M tokens | Included |
 
 ## Installation
 
@@ -91,7 +94,7 @@ https://github.com/user-attachments/assets/81329d1c-42d0-48c0-9137-a19ed5b8ba41
 If the embedded browser doesn't work (VPN, network restrictions, etc.), import cookies from your regular browser:
 
 1. Install [Get cookies.txt LOCALLY](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc) (Chrome/Edge) or [Firefox version](https://addons.mozilla.org/en-US/firefox/addon/get-cookies-txt-locally/)
-2. Go to [chatgpt.com](https://chatgpt.com) or [grok.com](https://grok.com) and log in
+2. Go to [chatgpt.com](https://chatgpt.com), [grok.com](https://grok.com), or [gemini.google.com](https://gemini.google.com) and log in
 3. Click the extension icon and export cookies (JSON or Netscape TXT format)
 4. In ComfyUI: Settings > Specter > Authentication > click the import button (📥) > paste or drop the file
 
@@ -121,44 +124,77 @@ Sessions save automatically for future use.
 | **Grok Prompt Enhancer** | Enhance prompts for better results |
 | **Grok Image Describer** | Generate descriptions from images |
 
+### Gemini
+
+| Node | Description |
+|------|-------------|
+| **Gemini Text** | Multimodal chat with Gemini models |
+| **Nano Banana** | Image generation with Gemini 1.5 Flash |
+| **Nano Banana Pro** | Image generation with Gemini 3.0 models |
+| **Gemini Prompt Enhancer** | Enhance prompts for better results |
+| **Gemini Image Describer** | Generate descriptions from images |
+
 ## Example Workflows
 
-### Text to Image
-Generate images from text prompts using ChatGPT Image.
+### ChatGPT Text to Image
+![chatgpt_txt2img](example_workflows/chatgpt_txt2img.jpg)
 
-![txt2img](example_workflows/txt2img_basic.jpg)
+[Download workflow](example_workflows/chatgpt_txt2img.json)
 
-[Download workflow](example_workflows/txt2img_basic.json)
+### ChatGPT Image to Image
+![chatgpt_img2img](example_workflows/chatgpt_img2img.jpg)
 
-### Image to Image
-Edit and transform images with ChatGPT Multimodal.
+[Download workflow](example_workflows/chatgpt_img2img.json)
 
-![img2img](example_workflows/img2img_edit.jpg)
+### ChatGPT Prompt Enhancer
+![chatgpt_prompt_enhancer](example_workflows/chatgpt_prompt_enhancer.jpg)
 
-[Download workflow](example_workflows/img2img_edit.json)
+[Download workflow](example_workflows/chatgpt_prompt_enhancer.json)
 
-### Prompt Enhancer
-Enhance basic prompts for better image generation results.
+### ChatGPT Image Describer
+![chatgpt_image_describer](example_workflows/chatgpt_image_describer.jpg)
 
-![prompt_enhancer](example_workflows/prompt_enhancer.jpg)
+[Download workflow](example_workflows/chatgpt_image_describer.json)
 
-[Download workflow](example_workflows/prompt_enhancer.json)
+### Grok Text to Image
+![grok_txt2img](example_workflows/grok_txt2img.jpg)
 
-### Image Describer
-Generate detailed descriptions from images.
+[Download workflow](example_workflows/grok_txt2img.json)
 
-![image_describer](example_workflows/image_describer.jpg)
+### Grok Text to Video
+![grok_txt2vid](example_workflows/grok_txt2vid.jpg)
 
-[Download workflow](example_workflows/image_describer.json)
+[Download workflow](example_workflows/grok_txt2vid.json)
+
+### Grok Image to Video
+![grok_img2vid](example_workflows/grok_img2vid.jpg)
+
+[Download workflow](example_workflows/grok_img2vid.json)
+
+### Grok Chat
+![grok_chat](example_workflows/grok_chat.jpg)
+
+[Download workflow](example_workflows/grok_chat.json)
+
+### Gemini Text to Image
+![gemini_txt2img](example_workflows/gemini_txt2img.jpg)
+
+[Download workflow](example_workflows/gemini_txt2img.json)
+
+### Gemini Chat
+![gemini_chat](example_workflows/gemini_chat.jpg)
+
+[Download workflow](example_workflows/gemini_chat.json)
 
 ## Rate Limits
 
-| | Free | Plus/Premium | Pro/SuperGrok |
+| | Free | Paid | Top Tier |
 |---|---|---|---|
-| **ChatGPT Image** | ~3/day | ~50/3hr | Unlimited |
-| **ChatGPT Text** | Limited | ~80/3hr | Unlimited |
-| **Grok Image** | ~20/day | 100/day | 200/day |
-| **Grok Video** | ~20/day | 100/day | 200/day |
+| **ChatGPT Image** | ~3/day | ~50/3hr (Plus) | Unlimited (Pro) |
+| **ChatGPT Text** | Limited | ~80/3hr (Plus) | Unlimited (Pro) |
+| **Grok Image** | ~20/day | 100/day (Premium) | 200/day (SuperGrok) |
+| **Grok Video** | ~20/day | 100/day (Premium) | 200/day (SuperGrok) |
+| **Gemini** | 50/day | Higher (AI Pro) | Highest (AI Ultra) |
 
 ## Troubleshooting
 
@@ -166,7 +202,3 @@ Generate detailed descriptions from images.
 - **Session expired?** Go to Settings > Specter > Authentication and click Sign In
 - **Browser not closing?** Check for zombie Chrome processes
 - **Login loop?** Delete session via Settings > Specter or remove `user_data/` folder
-
-## Coming Soon
-
-- Gemini support

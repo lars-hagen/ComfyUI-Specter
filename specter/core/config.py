@@ -105,9 +105,12 @@ def get_preset_names() -> list[str]:
 
 
 def get_preset_prompt(name: str) -> str:
-    """Get prompt text for a preset."""
-    preset = load_prompts().get("presets", {}).get(name, {})
-    return preset.get("prompt", "")
+    """Get prompt text for a preset, resolving any {template} variables."""
+    data = load_prompts()
+    preset = data.get("presets", {}).get(name, {})
+    prompt = preset.get("prompt", "")
+    templates = data.get("_templates", {})
+    return prompt.format(**templates) if templates else prompt
 
 
 def get_presets_by_category(category: str) -> list[str]:

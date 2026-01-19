@@ -25,7 +25,7 @@ from .core.utils import (
     video_to_bytes,
 )
 from .providers.chatgpt import chat_with_gpt
-from .providers.gemini import chat_with_gemini
+from .providers.gemini import chat_with_gemini, generate_image_with_gemini
 from .providers.grok_chat import chat_with_grok
 from .providers.grok_t2i import imagine_t2i
 from .providers.grok_video import SIZES, VIDEO_MODES, imagine_edit, imagine_i2v, imagine_t2v
@@ -156,7 +156,9 @@ class ChatGPTImageNode:
         final_prompt = f"{prefix} {prompt}" if prefix else prompt
         resolution = get_size_resolution(size)
         if resolution:
-            final_prompt = f"{final_prompt}\n\n[Generate at {resolution}.]"
+            w, h = map(int, resolution.split("x"))
+            orientation = "landscape" if w > h else "portrait" if h > w else "square"
+            final_prompt = f"{final_prompt}\n\n[Generate {orientation} image at {resolution}.]"
 
         with temp_image(image) as image_path:
             pbar = ProgressBar(100)
@@ -260,6 +262,75 @@ class GeminiTextNode:
                         os.unlink(f)
                     except:
                         pass
+
+
+class NanoBananaNode:
+    """Image generation with Gemini 1.5 Flash (Nano Banana)."""
+
+    DISPLAY_NAME = "Google Nano Banana"
+    CATEGORY = "Specter/image/Google"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "prompt": ("STRING", {"multiline": True, "default": "", "tooltip": "Image description."}),
+            },
+            "optional": {
+                "image": ("IMAGE", {"tooltip": "Reference image for editing."}),
+                "preview": ("BOOLEAN", {"default": False, "tooltip": "Show browser preview."}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
+    FUNCTION = "run"
+
+    async def run(self, prompt: str, image=None, preview: bool = False):
+        from comfy.utils import ProgressBar
+
+        with temp_image(image) as image_path:
+            pbar = ProgressBar(100)
+            image_paths = [image_path] if image_path else None
+            image_bytes = await generate_image_with_gemini(
+                prompt, model="gemini-1.5-flash", image_paths=image_paths, pbar=pbar, preview=preview
+            )
+            return (bytes_to_tensor(image_bytes) if image_bytes else empty_image_tensor(),)
+
+
+class NanoBananaProNode:
+    """Image generation with Gemini 3.0 models (Nano Banana Pro)."""
+
+    DISPLAY_NAME = "Google Nano Banana Pro"
+    CATEGORY = "Specter/image/Google"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "prompt": ("STRING", {"multiline": True, "default": "", "tooltip": "Image description."}),
+                "model": (["gemini-3.0-flash", "gemini-3.0-pro"], {"default": "gemini-3.0-flash", "tooltip": "Model to use."}),
+            },
+            "optional": {
+                "image": ("IMAGE", {"tooltip": "Reference image for editing."}),
+                "preview": ("BOOLEAN", {"default": False, "tooltip": "Show browser preview."}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
+    FUNCTION = "run"
+
+    async def run(self, prompt: str, model: str = "gemini-3.0-flash", image=None, preview: bool = False):
+        from comfy.utils import ProgressBar
+
+        with temp_image(image) as image_path:
+            pbar = ProgressBar(100)
+            image_paths = [image_path] if image_path else None
+            image_bytes = await generate_image_with_gemini(
+                prompt, model=model, image_paths=image_paths, pbar=pbar, preview=preview
+            )
+            return (bytes_to_tensor(image_bytes) if image_bytes else empty_image_tensor(),)
 
 
 # =============================================================================
@@ -629,11 +700,36 @@ class GrokVideoCombineNode:
         return (VideoFromFile(BytesIO(combined_bytes)),)
 
 
-# Generate utility nodes for both providers
-PromptEnhancerNode = _create_prompt_enhancer("chatgpt", "OpenAI", chat_with_gpt, "gpt-5-2-instant")
-GrokPromptEnhancerNode = _create_prompt_enhancer("grok", "xAI Grok", chat_with_grok, "grok-3")
-ImageDescriberNode = _create_image_describer("chatgpt", "OpenAI", chat_with_gpt, "gpt-5-2-instant")
-GrokImageDescriberNode = _create_image_describer("grok", "xAI Grok", chat_with_grok, "grok-3")
+# Gemini adapter for factory functions (different signature)
+async def _gemini_chat_adapter(
+    prompt: str,
+    model: str,
+    image_path: str | None = None,
+    system_message: str | None = None,
+    pbar=None,
+    preview: bool = False,
+    disable_tools: bool = False,
+) -> tuple[str, bytes | None]:
+    """Adapter: Gemini signature → factory signature."""
+    result = await chat_with_gemini(
+        prompt=prompt,
+        model=model,
+        image_paths=[image_path] if image_path else None,
+        system_prompt=system_message,
+        pbar=pbar,
+        preview=preview,
+        disable_image_gen=disable_tools,
+    )
+    return (result, None)
+
+
+# Generate utility nodes for all providers
+PromptEnhancerNode = _create_prompt_enhancer("chatgpt", "ChatGPT", chat_with_gpt, "gpt-5-2-instant")
+GrokPromptEnhancerNode = _create_prompt_enhancer("grok", "Grok", chat_with_grok, "grok-3")
+GeminiPromptEnhancerNode = _create_prompt_enhancer("gemini", "Gemini", _gemini_chat_adapter, "gemini-3.0-pro")
+ImageDescriberNode = _create_image_describer("chatgpt", "ChatGPT", chat_with_gpt, "gpt-5-2-instant")
+GrokImageDescriberNode = _create_image_describer("grok", "Grok", chat_with_grok, "grok-3")
+GeminiImageDescriberNode = _create_image_describer("gemini", "Gemini", _gemini_chat_adapter, "gemini-1.5-flash")
 
 
 # =============================================================================

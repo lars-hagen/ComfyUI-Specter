@@ -402,7 +402,9 @@ app.registerExtension({
     ],
     async nodeCreated(node) {
         if (!node.comfyClass.startsWith("Specter_")) return;
-        node.color = node.comfyClass.includes("Grok") ? "#1e3a8a" : "#991b1b";
+        // Deep sexy colors: Grok=purple, Gemini=blue, ChatGPT=red
+        const cls = node.comfyClass;
+        node.color = cls.includes("Grok") ? "#4c1d95" : cls.includes("Gemini") || cls.includes("NanoBanana") ? "#1e3a8a" : "#991b1b";
         node.bgcolor = "#2a2a2a";
         node.size[0] = Math.max(node.size[0], 300);
     },

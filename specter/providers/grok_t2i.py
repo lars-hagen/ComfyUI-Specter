@@ -4,11 +4,13 @@ import asyncio
 import base64
 import time
 
+from patchright.async_api import ViewportSize
+
 from ..core.browser import ProgressTracker, capture_preview, close_browser, launch_browser, log
 from .grok_video import SIZES, _check_errors, _log_image_info, _setup_imagine_page
 
 
-def _calc_viewport(size: str, max_images: int) -> dict:
+def _calc_viewport(size: str, max_images: int) -> ViewportSize:
     """Calculate viewport to fit exactly max_images in single column."""
     _, res = SIZES.get(size, ([1, 1], "960x960"))
     w, h = map(int, res.split("x"))
@@ -36,6 +38,7 @@ async def imagine_t2i(
     playwright, context, page, *_ = await launch_browser("grok")
 
     try:
+        await page.set_viewport_size(viewport)
         await _setup_imagine_page(page, size, video=False)
 
         log(f"Settings: {max_images} images, {expected_res}, viewport {viewport['width']}x{viewport['height']}", "○")
