@@ -83,7 +83,7 @@ CHROME_ARGS = [
 ]
 
 VIEWPORT: ViewportSize = {"width": 767, "height": 1020}
-USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
 DARK_THEME_SCRIPT = "localStorage.setItem('theme', 'dark'); localStorage.setItem('oai/apps/theme', 'dark');"
 
 
@@ -164,41 +164,45 @@ def is_headed() -> bool:
     return load_settings().get("headed_browser", False)
 
 
-async def launch_browser(service: str, headed: bool | None = None):
+async def launch_browser(
+    service: str,
+    headed: bool | None = None,
+    viewport: ViewportSize | None = None,
+    enable_tracing: bool | None = None,
+):
     """Launch browser. Returns: (playwright, context, page, cookies)"""
     if headed is None:
         headed = is_headed()
+    if enable_tracing is None:
+        enable_tracing = is_trace_enabled()
 
     log(f"Launching browser for {service} ({'headed' if headed else 'headless'})...", "◈")
 
     session = load_session(service)
     cookies = session.get("cookies", []) if session else []
-    if cookies:
+    if session:
         log(f"Loaded {len(cookies)} cookies", "○")
 
     pw = await async_playwright().start()
     browser = await pw.chromium.launch(channel="chrome", headless=not headed, args=CHROME_ARGS)
+
+    # Use storage_state to restore cookies + localStorage (CF tokens)
     context = await browser.new_context(
-        viewport=VIEWPORT,
+        viewport=viewport or VIEWPORT,
         user_agent=USER_AGENT,
-        service_workers="block",
-        bypass_csp=True,
+        storage_state=session if session else None,
     )
     # CRITICAL: Disable Patchright's route injection to prevent cross-domain navigation errors
     context._impl_obj.route_injecting = True
 
     # Start trace if enabled
-    if is_trace_enabled():
+    if enable_tracing:
         TRACE_DIR.mkdir(parents=True, exist_ok=True)
         await context.tracing.start(screenshots=True, snapshots=True, sources=True)
         context._specter_trace_service = service  # type: ignore[attr-defined]
         log("Tracing enabled", "◆")
 
-    if cookies:
-        await context.add_cookies(cookies)
-
     page = await context.new_page()
-    await page.add_init_script(DARK_THEME_SCRIPT)
 
     return pw, context, page, cookies
 
@@ -240,8 +244,6 @@ async def create_browser(headed: bool = True, viewport: ViewportSize | None = No
     context = await browser.new_context(
         viewport=viewport or VIEWPORT,
         user_agent=USER_AGENT,
-        service_workers="block",
-        bypass_csp=True,
     )
     # CRITICAL: Disable Patchright's route injection to prevent cross-domain navigation errors
     context._impl_obj.route_injecting = True
@@ -291,6 +293,7 @@ class ProgressTracker:
         self.preview = preview
         self.current = 0
         self.preview_image = None
+        self._preview_task = None
 
     def update(self, step: int, preview_image=None):
         if not self.pbar:
@@ -303,6 +306,31 @@ class ProgressTracker:
             self.pbar.update_absolute(self.current, 100, ("JPEG", self.preview_image, None))
         else:
             self.pbar.update_absolute(self.current, 100)
+
+    def update_async(self, step: int, page=None):
+        """Update progress and capture preview in parallel (non-blocking)."""
+        import asyncio
+        if not self.pbar:
+            return
+        if step > self.current:
+            self.current = step
+
+        # Start preview capture in background if needed
+        if self.preview and page and (self._preview_task is None or self._preview_task.done()):
+            self._preview_task = asyncio.create_task(self._capture_and_update(step, page))
+        elif not self.preview:
+            self.pbar.update_absolute(self.current, 100)
+
+    async def _capture_and_update(self, step: int, page):
+        """Capture preview and update progress bar (runs in background)."""
+        try:
+            preview_img = await capture_preview(page)
+            if preview_img and self.pbar:
+                self.preview_image = preview_img
+                if step >= self.current:  # Only update if still current
+                    self.pbar.update_absolute(step, 100, ("JPEG", preview_img, None))
+        except Exception:
+            pass  # Ignore preview capture errors
 
 
 async def capture_preview(page, height: int = 1200) -> Image.Image | None:

@@ -38,10 +38,8 @@ async def chat_with_gpt(
 
         if not await is_logged_in(page, LOGIN_SELECTORS):
             await close_browser(pw, context)
-            session = await handle_login("chatgpt", "specter-login-required", LOGIN_SELECTORS)
+            await handle_login("chatgpt", "specter-login-required", LOGIN_SELECTORS)
             pw, context, page, _ = await launch_browser("chatgpt")
-            if session.get("cookies"):
-                await context.add_cookies(session["cookies"])
             await page.goto("https://chatgpt.com/", wait_until="domcontentloaded")
 
         await page.wait_for_selector("#prompt-textarea", timeout=30000)
@@ -121,10 +119,11 @@ async def _wait_for_image(page, progress: ProgressTracker, preview: bool) -> tup
         src = await img.get_attribute("src")
         data = await (await page.request.get(src)).body()
         log(f"Captured {len(data)//1024}KB image", "◆")
-        progress.update(95)
 
         if preview:
             progress.update(95, await capture_preview(page))
+        else:
+            progress.update(95)
 
         return "Image generated", data
     except Exception as e:
@@ -146,10 +145,11 @@ async def _wait_for_text(page, progress: ProgressTracker, preview: bool) -> str:
         # Get last assistant message
         msg = page.locator('[data-message-author-role="assistant"] .markdown.prose').last
         text = await msg.inner_text()
-        progress.update(95)
 
         if preview:
             progress.update(95, await capture_preview(page))
+        else:
+            progress.update(95)
 
         return text
     except Exception as e:

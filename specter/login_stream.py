@@ -5,12 +5,7 @@ import base64
 import json
 import uuid
 
-from patchright.async_api import async_playwright
-
-from .core.browser import CHROME_ARGS, is_headed, log
-
-# Auth-specific UA (Chrome 144)
-AUTH_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
+from .core.browser import close_browser, launch_browser, log, save_session
 
 
 class BrowserStream:
@@ -35,6 +30,11 @@ class BrowserStream:
         self.current_service = None
         self.session_id = None
 
+        # Login check state (shared between stream and background task)
+        self._workspace_modal_seen = False
+        self._networkidle_waited = False
+        self._grok_redirect_step = 0
+
     async def start(
         self, url: str, width: int = 600, height: int = 800, login_config: dict | None = None, purpose: str = "login"
     ):
@@ -49,31 +49,23 @@ class BrowserStream:
         self._login_config = login_config
         self.current_service = (login_config.get("service") if login_config else None) or "default"
 
+        # Reset login check state
+        self._workspace_modal_seen = False
+        self._networkidle_waited = False
+        self._grok_redirect_step = 0
+
         log(f"[{self.session_id[:8]}] Starting browser session for {self.current_service}", "▸")
         self.browser_starting = True
 
         try:
-            self.playwright = await async_playwright().start()
-
-            self.browser = await self.playwright.chromium.launch(
-                channel="chrome",
-                headless=not is_headed(),
-                args=CHROME_ARGS,
-            )
-            self.context = await self.browser.new_context(
-                user_agent=AUTH_USER_AGENT,
+            # Use centralized browser launch (no tracing for login stream)
+            self.playwright, self.context, self.page, _ = await launch_browser(
+                service=self.current_service,
                 viewport={"width": width, "height": height},
+                enable_tracing=False,
             )
-
-            # CRITICAL: Disable Patchright's route injection that breaks cross-domain navigation
-            self.context._impl_obj.route_injecting = True  # type: ignore[attr-defined]
-
-            # Inject saved cookies if any
-            session = self._load_session()
-            if session and session.get("cookies"):
-                await self.context.add_cookies(session["cookies"])
-
-            self.page = await self.context.new_page()
+            # Get browser reference (needed for cleanup)
+            self.browser = self.context.browser
 
             # Setup WebAuthn virtual authenticator (makes passkey prompts fall back to password)
             try:
@@ -113,15 +105,6 @@ class BrowserStream:
             await self.stop()
             raise
 
-    def _load_session(self) -> dict | None:
-        if not self.current_service:
-            return None
-        try:
-            from .core.browser import load_session
-            return load_session(self.current_service)
-        except:
-            return None
-
     async def stop(self):
         """Stop browser stream - clean async shutdown."""
         sid = self.session_id[:8] if self.session_id else "unknown"
@@ -146,39 +129,19 @@ class BrowserStream:
                 pass
             self._cdp = None
 
-        # Close context
-        if self.context:
-            try:
-                await self.context.close()
-            except Exception:
-                pass
-            self.context = None
-
-        # Close browser
-        if self.browser:
-            try:
-                await self.browser.close()
-            except Exception:
-                pass
-            self.browser = None
-
-        # Stop playwright
-        if self.playwright:
-            try:
-                await self.playwright.stop()
-            except Exception:
-                pass
-            self.playwright = None
+        # Use centralized browser close
+        await close_browser(self.playwright, self.context, self.browser)
 
         self.page = None
+        self.context = None
+        self.browser = None
+        self.playwright = None
 
         if self.session_id:
             log(f"[{sid}] Browser stopped", "✓")
         self.session_id = None
 
     async def _save_login_and_broadcast(self):
-        from .core.browser import save_session
-
         if not self.current_service or not self.page:
             return
         try:
@@ -195,12 +158,14 @@ class BrowserStream:
         await self.stop()
 
     async def _stream_loop(self):
-        """Main streaming loop."""
+        """Main streaming loop - screenshots run at 30fps while login checks run in parallel."""
         last_url = None
         frame_count = 0
         login_broadcasted = False
-        workspace_modal_seen = False
-        networkidle_waited = False
+        self._workspace_modal_seen = False
+        self._networkidle_waited = False
+        self._grok_redirect_step = 0
+        login_check_task = None
 
         while self.streaming and self.page and self._cdp:
             try:
@@ -212,36 +177,30 @@ class BrowserStream:
                 if current_url != last_url:
                     log(f"Page: {current_url}", "→")
                     last_url = current_url
-                    workspace_modal_seen = False
-                    networkidle_waited = False
+                    self._workspace_modal_seen = False
+                    self._networkidle_waited = False
 
-                # Check login status every 15 frames
+                # Start login check task every 15 frames (non-blocking)
                 detect_login = self._login_config.get("detect_login", True) if self._login_config else True
                 if self._login_config and detect_login and not login_broadcasted and frame_count % 15 == 0:
+                    # Only start new check if previous one is done
+                    if login_check_task is None or login_check_task.done():
+                        login_check_task = asyncio.create_task(self._login_check_cycle(current_url))
+
+                # Check if login was detected by the background task
+                if login_check_task and login_check_task.done() and not login_broadcasted:
                     try:
-                        logged_in, networkidle_waited = await self._check_logged_in(networkidle_waited)
-
-                        ws_selector = self._login_config.get("workspace_selector")
-                        if ws_selector and not logged_in:
-                            modal_count = await self.page.locator(ws_selector).count()
-                            if modal_count > 0 and not workspace_modal_seen:
-                                log("Workspace modal open - waiting for user to close it", "○")
-                                workspace_modal_seen = True
-                            elif modal_count == 0 and workspace_modal_seen:
-                                log("Workspace modal closed", "✓")
-                                workspace_modal_seen = False
-                                logged_in = True
-
+                        logged_in = login_check_task.result()
                         if logged_in:
                             log("Login detected! Closing browser to save session...", "★")
                             await self._save_login_and_broadcast()
                             login_broadcasted = True
                             asyncio.create_task(self._auto_close())
                             break
-                    except Exception as e:
-                        log(f"Login check error: {e}", "⚠")
+                    except Exception:
+                        pass  # Ignore errors from login check
 
-                # CDP screenshot
+                # CDP screenshot - runs continuously at 30fps
                 try:
                     result = await self._cdp.send("Page.captureScreenshot", {"format": "jpeg", "quality": 95})
                     screenshot = base64.b64decode(result["data"])
@@ -265,6 +224,44 @@ class BrowserStream:
                 else:
                     log(f"[{sid}] Stream error: {type(e).__name__}", "✕")
                 break
+
+    async def _login_check_cycle(self, current_url: str) -> bool:
+        """Run login check cycle in parallel without blocking the stream."""
+        try:
+            # Redirect from X.ai account page to Grok Imagine
+            if self.current_service == "grok":
+                if self._grok_redirect_step == 0 and "accounts.x.ai/account" in current_url:
+                    log("X.ai login successful, navigating to Grok Imagine...", "→")
+                    await self.page.goto("https://grok.com/imagine?_s=home", timeout=60000, wait_until="domcontentloaded")
+                    self._grok_redirect_step = 1
+                    return False
+
+                # Wait for CF to solve before checking login (title must be "grok")
+                if self._grok_redirect_step == 1 and "grok.com" in current_url:
+                    try:
+                        title = (await self.page.title()).lower()
+                        if "grok" not in title or "just a moment" in title:
+                            return False
+                    except Exception:
+                        return False
+
+            logged_in, self._networkidle_waited = await self._check_logged_in(self._networkidle_waited)
+
+            ws_selector = self._login_config.get("workspace_selector")
+            if ws_selector and not logged_in:
+                modal_count = await self.page.locator(ws_selector).count()
+                if modal_count > 0 and not self._workspace_modal_seen:
+                    log("Workspace modal open - waiting for user to close it", "○")
+                    self._workspace_modal_seen = True
+                elif modal_count == 0 and self._workspace_modal_seen:
+                    log("Workspace modal closed", "✓")
+                    self._workspace_modal_seen = False
+                    logged_in = True
+
+            return logged_in
+        except Exception as e:
+            log(f"Login check error: {e}", "⚠")
+            return False
 
     async def _check_logged_in(self, networkidle_waited: bool = False) -> tuple[bool, bool]:
         """Check if user is logged in."""

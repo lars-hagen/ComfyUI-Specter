@@ -40,7 +40,6 @@ async def chat_with_grok(
     pw, context, page, _ = await launch_browser("grok")
     progress.update(10)
 
-    # Add Grok init scripts
     await page.add_init_script(AGE_VERIFICATION_SCRIPT)
     await page.add_init_script(DISMISS_NOTIFICATIONS_SCRIPT)
 
@@ -49,12 +48,10 @@ async def chat_with_grok(
 
         if not await _is_logged_in(page):
             await close_browser(pw, context)
-            session = await _handle_login()
+            await _handle_login()
             pw, context, page, _ = await launch_browser("grok")
             await page.add_init_script(AGE_VERIFICATION_SCRIPT)
             await page.add_init_script(DISMISS_NOTIFICATIONS_SCRIPT)
-            if session.get("cookies"):
-                await context.add_cookies(session["cookies"])
             await page.goto("https://grok.com", wait_until="domcontentloaded")
 
         await page.wait_for_selector('textarea[aria-label="Ask Grok anything"], div[contenteditable="true"]', timeout=30000)
@@ -236,14 +233,18 @@ async def _wait_for_image(page, captured: list, progress: ProgressTracker, previ
 
         while asyncio.get_event_loop().time() - start < 60:
             if captured:
-                progress.update(95)
                 if preview:
                     progress.update(95, await capture_preview(page))
+                else:
+                    progress.update(95)
                 return "Image generated", captured[-1]
 
             elapsed = asyncio.get_event_loop().time() - start
-            if elapsed - last_preview >= 3 and preview:
-                progress.update(int(40 + elapsed), await capture_preview(page))
+            if elapsed - last_preview >= 3:
+                if preview:
+                    progress.update_async(int(40 + elapsed), page)
+                else:
+                    progress.update(int(40 + elapsed))
                 last_preview = elapsed
 
             await asyncio.sleep(0.5)
@@ -261,14 +262,18 @@ async def _wait_for_text(page, state: dict, progress: ProgressTracker, preview: 
 
         while asyncio.get_event_loop().time() - start < 120:
             if state["complete"]:
-                progress.update(95)
                 if preview:
                     progress.update(95, await capture_preview(page))
+                else:
+                    progress.update(95)
                 return state["text"]
 
             elapsed = asyncio.get_event_loop().time() - start
-            if elapsed - last_preview >= 3 and preview:
-                progress.update(int(40 + elapsed / 2), await capture_preview(page))
+            if elapsed - last_preview >= 3:
+                if preview:
+                    progress.update_async(int(40 + elapsed / 2), page)
+                else:
+                    progress.update(int(40 + elapsed / 2))
                 last_preview = elapsed
 
             await asyncio.sleep(0.5)
