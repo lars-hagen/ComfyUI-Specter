@@ -77,10 +77,27 @@ def check_browser_health() -> tuple[bool, str | None]:
     return True, None
 
 
+async def check_google_connectivity() -> bool:
+    """Check if server can reach www.gstatic.com (returns True if blocked)."""
+    import asyncio
+    try:
+        # Try to resolve and connect to www.gstatic.com from the server
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection("www.gstatic.com", 443),
+            timeout=3.0
+        )
+        writer.close()
+        await writer.wait_closed()
+        return False  # Successfully connected, not blocked
+    except Exception:
+        return True  # Failed to connect, blocked
+
+
 @PromptServer.instance.routes.get("/specter/health")
 async def health(_request):
     ready, error = check_browser_health()
-    return web.json_response({"ready": ready, "error": error})
+    google_blocked = await check_google_connectivity()
+    return web.json_response({"ready": ready, "error": error, "google_blocked": google_blocked})
 
 
 @PromptServer.instance.routes.get("/specter/{service}/status")
