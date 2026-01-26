@@ -6,8 +6,8 @@ import time
 
 from patchright.async_api import ViewportSize
 
-from ..core.browser import ProgressTracker, capture_preview, close_browser, launch_browser, log
-from .grok_video import SIZES, _check_errors, _log_image_info, _setup_imagine_page
+from ..core.browser import ProgressTracker, capture_preview, close_browser, ensure_logged_in, launch_browser, log
+from .grok_video import GROK_LOGIN_EVENT, SIZES, _check_errors, _log_image_info, _setup_imagine_page
 
 
 def _calc_viewport(size: str, max_images: int) -> ViewportSize:
@@ -30,6 +30,11 @@ async def imagine_t2i(
 ) -> list[bytes]:
     """Text-to-image generation."""
     progress = ProgressTracker(pbar, preview)
+    progress.update(5)
+
+    # Check login before launching browser
+    await ensure_logged_in("grok", GROK_LOGIN_EVENT)
+
     progress.update(10)
 
     viewport = _calc_viewport(size, max_images)
@@ -66,7 +71,7 @@ async def imagine_t2i(
             return buttons.length >= targetCount;
         }""",
             arg=target_count,
-            timeout=60000,
+            timeout=80000,
         )
         await _check_errors(page)
 
@@ -80,7 +85,7 @@ async def imagine_t2i(
         stable_count = 0
         last_error_check = 0
 
-        while time.time() - wait_start < 40:
+        while time.time() - wait_start < 70:
             try:
                 # Check if images meet quality threshold
                 await page.wait_for_function(
@@ -155,8 +160,8 @@ async def imagine_t2i(
             await asyncio.sleep(1)
 
         # Check if we timed out
-        if time.time() - wait_start >= 40:
-            log("Timeout after 40s - proceeding with whatever is loaded", "⚠")
+        if time.time() - wait_start >= 70:
+            log("Timeout after 70s - proceeding with whatever is loaded", "⚠")
 
         progress.update(90)
 

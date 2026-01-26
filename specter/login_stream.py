@@ -5,7 +5,7 @@ import base64
 import json
 import uuid
 
-from .core.browser import close_browser, launch_browser, log, save_session
+from .core.browser import close_browser, debug_log, launch_browser, log, save_session
 
 
 class BrowserStream:
@@ -227,6 +227,9 @@ class BrowserStream:
 
     async def _login_check_cycle(self, current_url: str) -> bool:
         """Run login check cycle in parallel without blocking the stream."""
+        if not self.page or not self._login_config:
+            return False
+
         try:
             # Redirect from X.ai account page to Grok Imagine
             if self.current_service == "grok":
@@ -274,18 +277,39 @@ class BrowserStream:
             success_excludes = self._login_config.get("success_url_excludes", "")
 
             if not success_pattern or success_pattern not in url:
+                debug_log(f"Login check: URL '{url}' does not contain '{success_pattern}'")
                 return (False, networkidle_waited)
             if success_excludes and success_excludes in url:
+                debug_log(f"Login check: URL '{url}' contains excluded '{success_excludes}'")
                 return (False, networkidle_waited)
 
+            debug_log(f"Login check: URL matches pattern '{success_pattern}'")
+
+            # Check for required logged-in selector (positive check)
+            logged_in_selector = self._login_config.get("logged_in_selector")
+            if logged_in_selector:
+                try:
+                    count = await self.page.locator(logged_in_selector).count()
+                    if count == 0:
+                        debug_log(f"Login check: Required selector '{logged_in_selector}' not found")
+                        return (False, networkidle_waited)
+                    debug_log(f"Login check: Found required selector '{logged_in_selector}'")
+                except Exception as e:
+                    debug_log(f"Login check: Failed to check selector: {e}")
+                    return (False, networkidle_waited)
+
+            # Check for excluded text on page (negative check)
             verify_excludes = self._login_config.get("verify_excludes", [])
             if verify_excludes:
                 try:
                     page_text = (await self.page.evaluate("() => document.body?.innerText || ''")).lower()
-                    if any(phrase.lower() in page_text for phrase in verify_excludes):
-                        return (False, networkidle_waited)
-                except Exception:
-                    pass
+                    for phrase in verify_excludes:
+                        if phrase.lower() in page_text:
+                            debug_log(f"Login check: Page contains excluded text '{phrase}'")
+                            return (False, networkidle_waited)
+                    debug_log(f"Login check: Page does not contain excluded texts {verify_excludes}")
+                except Exception as e:
+                    debug_log(f"Login check: Failed to check page text: {e}")
 
             ws_selector = self._login_config.get("workspace_selector")
             if ws_selector and not networkidle_waited:
@@ -298,10 +322,13 @@ class BrowserStream:
             if ws_selector:
                 modal_count = await self.page.locator(ws_selector).count()
                 if modal_count > 0:
+                    debug_log(f"Login check: Workspace modal visible ({ws_selector})")
                     return (False, networkidle_waited)
 
+            debug_log("Login check: All checks passed - user is logged in")
             return (True, networkidle_waited)
-        except Exception:
+        except Exception as e:
+            debug_log(f"Login check: Exception - {e}")
             return (False, networkidle_waited)
 
     async def _broadcast_bytes(self, data: bytes):

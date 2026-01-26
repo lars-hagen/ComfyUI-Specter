@@ -13,6 +13,12 @@ from .browser import (
     delete_session as delete_session,
 )
 from .browser import (
+    ensure_logged_in as ensure_logged_in,
+)
+from .browser import (
+    has_session as has_session,
+)
+from .browser import (
     launch_browser as launch_browser,
 )
 from .browser import (

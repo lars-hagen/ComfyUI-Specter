@@ -1,4 +1,4 @@
-"""Specter nodes for ComfyUI."""
+"""Specter nodes for ComfyUI - DRY factory-based definitions."""
 
 import asyncio
 import functools
@@ -6,13 +6,16 @@ import functools
 from .core.browser import log_context
 from .core.config import (
     TOOLTIPS,
+    get_all_text_models,
     get_image_model,
     get_image_models,
     get_image_sizes,
     get_models,
     get_preset_prompt,
     get_presets_by_category,
+    get_provider_for_model,
     get_size_resolution,
+    load_config,
 )
 from .core.utils import (
     bytes_list_to_tensor,
@@ -25,181 +28,224 @@ from .core.utils import (
     video_to_bytes,
 )
 from .providers.chatgpt import chat_with_gpt
+from .providers.flow_i2i import ASPECT_RATIOS as FLOW_EDIT_RATIOS
+from .providers.flow_i2i import MODELS as FLOW_EDIT_MODELS
+from .providers.flow_i2i import edit_image as flow_edit_image
+from .providers.flow_i2v import ASPECT_RATIOS as FLOW_I2V_RATIOS
+from .providers.flow_i2v import MODELS as FLOW_I2V_MODELS
+from .providers.flow_i2v import generate_i2v as flow_generate_i2v
+from .providers.flow_ref2v import ASPECT_RATIOS as FLOW_REF2V_RATIOS
+from .providers.flow_ref2v import MODELS as FLOW_REF2V_MODELS
+from .providers.flow_ref2v import generate_ref2v as flow_generate_ref2v
+from .providers.flow_t2i import ASPECT_RATIOS as FLOW_ASPECT_RATIOS
+from .providers.flow_t2i import MODELS as FLOW_MODELS
+from .providers.flow_t2i import imagine_t2i as flow_imagine_t2i
+from .providers.flow_t2v import ASPECT_RATIOS as FLOW_VIDEO_RATIOS
+from .providers.flow_t2v import MODELS as FLOW_VIDEO_MODELS
+from .providers.flow_t2v import generate_t2v as flow_generate_t2v
 from .providers.gemini import chat_with_gemini, generate_image_with_gemini
 from .providers.grok_chat import chat_with_grok
 from .providers.grok_t2i import imagine_t2i
 from .providers.grok_video import SIZES, VIDEO_MODES, imagine_edit, imagine_i2v, imagine_t2v
 
-# Size names for Grok Imagine
+# =============================================================================
+# INPUT HELPERS - Reduce repetition in INPUT_TYPES
+# =============================================================================
+
+_PREVIEW = ("BOOLEAN", {"default": False, "tooltip": "Show browser preview."})
+_SYSTEM = ("STRING", {"multiline": True, "default": "", "tooltip": TOOLTIPS["system_message"]})
+_IMAGE_IN = ("IMAGE", {"tooltip": TOOLTIPS["image"]})
+
+
+def _prompt(tip: str = "") -> tuple:
+    return ("STRING", {"multiline": True, "default": "", "tooltip": tip or TOOLTIPS["prompt"]})
+
+
+def _int(d: int, lo: int, hi: int, tip: str = "") -> tuple:
+    return ("INT", {"default": d, "min": lo, "max": hi, "tooltip": tip})
+
+# Provider-specific option lists
 GROK_SIZES = list(SIZES.keys())
 GROK_MODES = list(VIDEO_MODES.keys())
-
-
-# =============================================================================
-# UTILITY NODES
-# =============================================================================
-
-
-class LoadFilesNode:
-    """Load files from disk for use with AI chat nodes."""
-
-    DISPLAY_NAME = "Load Files"
-    CATEGORY = "Specter/utils"
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "file_path": ("STRING", {"default": "", "tooltip": "Path to file (PDF, TXT, etc). Supports comma-separated paths."}),
-            },
-        }
-
-    RETURN_TYPES = ("SPECTER_FILES",)
-    RETURN_NAMES = ("files",)
-    FUNCTION = "run"
-
-    def run(self, file_path: str):
-        import os
-
-        paths = []
-        for p in file_path.split(","):
-            p = p.strip()
-            if p and os.path.exists(p):
-                paths.append(p)
-            elif p:
-                print(f"[Specter] Warning: File not found: {p}")
-
-        return (paths,)
-
+FLOW_MODEL_IDS = list(FLOW_MODELS.keys())
+FLOW_RATIOS = list(FLOW_ASPECT_RATIOS.keys())
+FLOW_EDIT_MODEL_IDS = list(FLOW_EDIT_MODELS.keys())
+FLOW_EDIT_RATIO_IDS = list(FLOW_EDIT_RATIOS.keys())
+FLOW_I2V_MODEL_IDS = FLOW_I2V_MODELS  # Already a list
+FLOW_I2V_RATIO_IDS = FLOW_I2V_RATIOS  # Already a list
+FLOW_REF2V_MODEL_IDS = FLOW_REF2V_MODELS  # Already a list
+FLOW_REF2V_RATIO_IDS = FLOW_REF2V_RATIOS  # Already a list
+FLOW_VIDEO_MODEL_IDS = FLOW_VIDEO_MODELS  # Already a list
+FLOW_VIDEO_RATIO_IDS = FLOW_VIDEO_RATIOS  # Already a list
 
 # =============================================================================
-# CHATGPT NODES
+# NODE FACTORIES
 # =============================================================================
 
 
-class ChatGPTTextNode:
-    """Text chat with ChatGPT."""
+def _wrap_with_context(fn, context_name: str):
+    """Wrap a function to set log context for all logs during execution."""
+    if asyncio.iscoroutinefunction(fn):
+        @functools.wraps(fn)
+        async def async_wrapper(*args, **kwargs):
+            with log_context(context_name):
+                return await fn(*args, **kwargs)
+        return async_wrapper
+    else:
+        @functools.wraps(fn)
+        def sync_wrapper(*args, **kwargs):
+            with log_context(context_name):
+                return fn(*args, **kwargs)
+        return sync_wrapper
 
-    DISPLAY_NAME = "OpenAI ChatGPT"
-    CATEGORY = "Specter/text/OpenAI"
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        models = get_models("chatgpt") or ["gpt-5-2-instant"]
-        return {
-            "required": {
-                "prompt": ("STRING", {"multiline": True, "default": "", "tooltip": TOOLTIPS["prompt"]}),
-                "model": (models, {"default": models[0], "tooltip": TOOLTIPS["model"]}),
-            },
-            "optional": {
-                "system_message": ("STRING", {"multiline": True, "default": "", "tooltip": TOOLTIPS["system_message"]}),
-                "image": ("IMAGE", {"tooltip": TOOLTIPS["image"]}),
-                "preview": ("BOOLEAN", {"default": False, "tooltip": "Show browser preview."}),
-            },
-        }
+def _image_node(display: str, category: str, fn, required: dict, optional: dict | None = None, multi: bool = False):
+    """Factory for image generation nodes."""
+    opt = {**(optional or {}), "preview": _PREVIEW}
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("response",)
-    FUNCTION = "run"
+    class Node:
+        DISPLAY_NAME = display
+        CATEGORY = category
+        RETURN_TYPES = ("IMAGE",)
+        RETURN_NAMES = ("images" if multi else "image",)
+        FUNCTION = "run"
 
-    async def run(self, prompt: str, model: str, system_message: str | None = None, image=None, preview: bool = False):
-        from comfy.utils import ProgressBar
+        @classmethod
+        def INPUT_TYPES(cls):
+            return {"required": required, "optional": opt}
 
-        with temp_image(image) as image_path:
+        async def run(self, preview: bool = False, **kw):
+            from comfy.utils import ProgressBar
             pbar = ProgressBar(100)
-            text, _ = await chat_with_gpt(
-                prompt,
-                model,
-                image_path,
-                system_message=system_message if system_message and system_message.strip() else None,
-                pbar=pbar,
-                preview=preview,
-            )
-            return (text,)
+            result = await fn(**kw, pbar=pbar, preview=preview)
+            return (bytes_list_to_tensor(result),) if multi else (bytes_to_tensor(result) if result else empty_image_tensor(),)
+
+    return Node
 
 
-class ChatGPTImageNode:
-    """Image generation with ChatGPT."""
+def _image_node_with_input(display: str, category: str, fn, required: dict, optional: dict | None = None, multi: bool = False):
+    """Factory for image generation nodes that take an input image."""
+    opt = {**(optional or {}), "preview": _PREVIEW}
 
-    DISPLAY_NAME = "OpenAI GPT Image 1"
-    CATEGORY = "Specter/image/OpenAI"
+    class Node:
+        DISPLAY_NAME = display
+        CATEGORY = category
+        RETURN_TYPES = ("IMAGE",)
+        RETURN_NAMES = ("images" if multi else "image",)
+        FUNCTION = "run"
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        image_models = get_image_models("chatgpt") or ["gpt-image-1.5"]
-        sizes = get_image_sizes() or ["Auto"]
-        return {
-            "required": {
-                "prompt": ("STRING", {"multiline": True, "default": "", "tooltip": "Image description."}),
-            },
-            "optional": {
-                "model": (image_models, {"default": image_models[0], "tooltip": "Image model."}),
-                "image": ("IMAGE", {"tooltip": "Reference image for editing."}),
-                "size": (sizes, {"default": sizes[0], "tooltip": TOOLTIPS["size"]}),
-                "preview": ("BOOLEAN", {"default": False, "tooltip": "Show browser preview."}),
-            },
-        }
+        @classmethod
+        def INPUT_TYPES(cls):
+            return {"required": required, "optional": opt}
 
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("image",)
-    FUNCTION = "run"
+        async def run(self, image=None, preview: bool = False, **kw):
+            from comfy.utils import ProgressBar
+            with temp_image(image) as image_path:
+                pbar = ProgressBar(100)
+                result = await fn(**kw, image_path=image_path, pbar=pbar, preview=preview)
+                return (bytes_list_to_tensor(result),) if multi else (bytes_to_tensor(result) if result else empty_image_tensor(),)
 
-    async def run(
-        self, prompt: str, model: str = "gpt-image-1.5", image=None, size: str = "Auto", preview: bool = False
-    ):
-        from comfy.utils import ProgressBar
+    return Node
 
-        config = get_image_model("chatgpt", model)
-        proxy_model = config.get("proxy_model", "gpt-5-2-instant")
-        prefix = config.get("edit_prefix" if image is not None else "prompt_prefix", "")
 
-        final_prompt = f"{prefix} {prompt}" if prefix else prompt
-        resolution = get_size_resolution(size)
-        if resolution:
-            w, h = map(int, resolution.split("x"))
-            orientation = "landscape" if w > h else "portrait" if h > w else "square"
-            final_prompt = f"{final_prompt}\n\n[Generate {orientation} image at {resolution}.]"
+def _chat_node(display: str, category: str, fn, models_fn, has_image: bool = True):
+    """Factory for text chat nodes."""
 
-        with temp_image(image) as image_path:
-            pbar = ProgressBar(100)
-            _, image_bytes = await chat_with_gpt(
-                final_prompt, proxy_model, image_path, pbar=pbar, preview=preview, _expect_image=True
-            )
-            return (bytes_to_tensor(image_bytes) if image_bytes else empty_image_tensor(),)
+    class Node:
+        DISPLAY_NAME = display
+        CATEGORY = category
+        RETURN_TYPES = ("STRING",)
+        RETURN_NAMES = ("response",)
+        FUNCTION = "run"
+
+        @classmethod
+        def INPUT_TYPES(cls):
+            models = models_fn() or ["default"]
+            inputs = {
+                "required": {"prompt": _prompt(), "model": (models, {"default": models[0], "tooltip": TOOLTIPS["model"]})},
+                "optional": {"system_message": _SYSTEM, "preview": _PREVIEW},
+            }
+            if has_image:
+                inputs["optional"]["image"] = _IMAGE_IN
+            return inputs
+
+        async def run(self, prompt: str, model: str, system_message: str | None = None, image=None, preview: bool = False):
+            from comfy.utils import ProgressBar
+            with temp_image(image) as image_path:
+                pbar = ProgressBar(100)
+                text, _ = await fn(
+                    prompt, model, image_path,
+                    system_message=system_message.strip() if system_message else None,
+                    pbar=pbar, preview=preview,
+                )
+                return (text,)
+
+    return Node
+
+
+def _video_node(display: str, category: str, fn, required: dict, optional: dict | None = None, needs_image: bool = False):
+    """Factory for video generation nodes."""
+    opt = {**(optional or {}), "preview": _PREVIEW}
+
+    class Node:
+        DISPLAY_NAME = display
+        CATEGORY = category
+        RETURN_TYPES = ("VIDEO", "IMAGE")
+        RETURN_NAMES = ("video", "last_frame")
+        FUNCTION = "run"
+
+        @classmethod
+        def INPUT_TYPES(cls):
+            return {"required": required, "optional": opt}
+
+        async def run(self, image=None, preview: bool = False, **kw):
+            from io import BytesIO
+
+            from comfy.utils import ProgressBar
+            from comfy_api.input_impl import VideoFromFile
+
+            with temp_image(image) as image_path:
+                if needs_image and not image_path:
+                    raise RuntimeError("Image required")
+                pbar = ProgressBar(100)
+                video_bytes = await fn(**kw, **({"image_path": image_path} if needs_image else {}), pbar=pbar, preview=preview)
+                if not video_bytes:
+                    raise RuntimeError("Video generation failed - no video captured")
+                return (VideoFromFile(BytesIO(video_bytes)), extract_last_frame_from_video(video_bytes))
+
+    return Node
 
 
 # =============================================================================
-# GEMINI NODES
+# CHAT NODES
 # =============================================================================
+
+ChatGPTTextNode = _chat_node("OpenAI ChatGPT", "Specter/text/OpenAI", chat_with_gpt, lambda: get_models("chatgpt"))
+GrokTextNode = _chat_node("xAI Grok", "Specter/text/xAI", chat_with_grok, lambda: get_models("grok"))
 
 
 class GeminiTextNode:
-    """Multimodal chat with Gemini."""
-
+    """Multimodal chat with Gemini - special handling for multiple input types."""
     DISPLAY_NAME = "Google Gemini"
     CATEGORY = "Specter/text/Google"
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("response",)
+    FUNCTION = "run"
 
     @classmethod
     def INPUT_TYPES(cls):
         models = get_models("gemini") or ["gemini-1.5-flash"]
         return {
-            "required": {
-                "prompt": ("STRING", {"multiline": True, "default": "", "tooltip": TOOLTIPS["prompt"]}),
-                "model": (models, {"default": models[0], "tooltip": TOOLTIPS["model"]}),
-            },
+            "required": {"prompt": _prompt(), "model": (models, {"default": models[0], "tooltip": TOOLTIPS["model"]})},
             "optional": {
                 "images": ("IMAGE", {"tooltip": "Images to include (single or batch)."}),
                 "audio": ("AUDIO", {"tooltip": "Audio file to include."}),
                 "video": ("VIDEO", {"tooltip": "Video file to include."}),
-                "files": ("SPECTER_FILES", {"forceInput": True, "tooltip": "Files to include (from Load Files node)."}),
-                "preview": ("BOOLEAN", {"default": False, "tooltip": "Show browser preview."}),
-                "system_prompt": ("STRING", {"multiline": True, "tooltip": "System instructions injected into request."}),
+                "files": ("SPECTER_FILES", {"forceInput": True, "tooltip": "Files from Load Files node."}),
+                "system_prompt": ("STRING", {"multiline": True, "tooltip": "System instructions."}),
+                "preview": _PREVIEW,
             },
         }
-
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("response",)
-    FUNCTION = "run"
 
     async def run(self, prompt: str, model: str, images=None, audio=None, video=None, files=None, system_prompt=None, preview: bool = False):
         import os
@@ -210,11 +256,9 @@ class GeminiTextNode:
         temp_files = []
         try:
             with temp_images(images) as image_paths:
-                # Handle AUDIO type (dict with waveform tensor and sample_rate)
                 audio_path = None
                 if audio:
                     if isinstance(audio, dict) and "waveform" in audio:
-                        # Convert audio tensor to MP3 file
                         from comfy_api_nodes.util.conversions import audio_input_to_mp3
                         mp3_bytes = audio_input_to_mp3(audio)  # type: ignore[arg-type]
                         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
@@ -226,7 +270,6 @@ class GeminiTextNode:
                     elif isinstance(audio, str):
                         audio_path = audio
 
-                # Handle VIDEO type (can be dict, str, or VideoFromFile with save_to)
                 video_path = None
                 if video:
                     if isinstance(video, dict) and "filename" in video:
@@ -234,25 +277,17 @@ class GeminiTextNode:
                     elif isinstance(video, str):
                         video_path = video
                     elif hasattr(video, "save_to"):
-                        # VideoFromFile - save to temp file
                         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
                             temp_video_path = f.name
                         video.save_to(temp_video_path)  # type: ignore[union-attr]
                         video_path = temp_video_path
                         temp_files.append(temp_video_path)
 
-                # Handle files input (SPECTER_FILES = list of paths from Load Files node)
-                file_paths = list(files) if files else []
-
                 pbar = ProgressBar(100)
                 text = await chat_with_gemini(
-                    prompt, model,
-                    image_paths=image_paths,
-                    audio_path=audio_path,
-                    video_path=video_path,
-                    file_paths=file_paths,
-                    system_prompt=system_prompt.strip() if system_prompt else None,
-                    pbar=pbar, preview=preview
+                    prompt, model, image_paths=image_paths, audio_path=audio_path, video_path=video_path,
+                    file_paths=list(files) if files else [], system_prompt=system_prompt.strip() if system_prompt else None,
+                    pbar=pbar, preview=preview,
                 )
                 return (text,)
         finally:
@@ -260,510 +295,519 @@ class GeminiTextNode:
                 if os.path.exists(f):
                     try:
                         os.unlink(f)
-                    except:
+                    except Exception:
                         pass
 
 
-class NanoBananaNode:
-    """Image generation with Gemini 1.5 Flash (Nano Banana)."""
-
-    DISPLAY_NAME = "Google Nano Banana"
-    CATEGORY = "Specter/image/Google"
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "prompt": ("STRING", {"multiline": True, "default": "", "tooltip": "Image description."}),
-            },
-            "optional": {
-                "image": ("IMAGE", {"tooltip": "Reference image for editing."}),
-                "preview": ("BOOLEAN", {"default": False, "tooltip": "Show browser preview."}),
-            },
-        }
-
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("image",)
-    FUNCTION = "run"
-
-    async def run(self, prompt: str, image=None, preview: bool = False):
-        from comfy.utils import ProgressBar
-
-        with temp_image(image) as image_path:
-            pbar = ProgressBar(100)
-            image_paths = [image_path] if image_path else None
-            image_bytes = await generate_image_with_gemini(
-                prompt, model="gemini-1.5-flash", image_paths=image_paths, pbar=pbar, preview=preview
-            )
-            return (bytes_to_tensor(image_bytes) if image_bytes else empty_image_tensor(),)
-
-
-class NanoBananaProNode:
-    """Image generation with Gemini 3.0 models (Nano Banana Pro)."""
-
-    DISPLAY_NAME = "Google Nano Banana Pro"
-    CATEGORY = "Specter/image/Google"
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "prompt": ("STRING", {"multiline": True, "default": "", "tooltip": "Image description."}),
-                "model": (["gemini-3.0-flash", "gemini-3.0-pro"], {"default": "gemini-3.0-flash", "tooltip": "Model to use."}),
-            },
-            "optional": {
-                "image": ("IMAGE", {"tooltip": "Reference image for editing."}),
-                "preview": ("BOOLEAN", {"default": False, "tooltip": "Show browser preview."}),
-            },
-        }
-
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("image",)
-    FUNCTION = "run"
-
-    async def run(self, prompt: str, model: str = "gemini-3.0-flash", image=None, preview: bool = False):
-        from comfy.utils import ProgressBar
-
-        with temp_image(image) as image_path:
-            pbar = ProgressBar(100)
-            image_paths = [image_path] if image_path else None
-            image_bytes = await generate_image_with_gemini(
-                prompt, model=model, image_paths=image_paths, pbar=pbar, preview=preview
-            )
-            return (bytes_to_tensor(image_bytes) if image_bytes else empty_image_tensor(),)
-
-
 # =============================================================================
-# GROK NODES
+# IMAGE NODES
 # =============================================================================
 
+FlowImageNode = _image_node(
+    "Google Flow Text to Image", "Specter/image/Google", flow_imagine_t2i,
+    {"prompt": _prompt("Image description.")},
+    {
+        "model": (FLOW_MODEL_IDS, {"default": "nano-banana-pro", "tooltip": "Model: imagen-4, nano-banana, nano-banana-pro."}),
+        "aspect_ratio": (FLOW_RATIOS, {"default": "16:9 (1376x768)", "tooltip": "Aspect ratio."}),
+        "num_outputs": _int(1, 1, 4, "Number of images (1-4)."),
+        "seed": ("INT", {"default": 42, "min": 0, "max": 999999, "tooltip": "Random seed (0 = random)."}),
+        "upscale": ("BOOLEAN", {"default": False, "tooltip": "Upscale to 2K resolution."}),
+    },
+    multi=True,
+)
 
-class GrokTextNode:
-    """Text chat with Grok."""
+FlowVideoNode = _video_node(
+    "Google Flow Text to Video", "Specter/video/Google", flow_generate_t2v,
+    {"prompt": _prompt("Video description.")},
+    {
+        "model": (FLOW_VIDEO_MODEL_IDS, {"default": "veo-3.1-fast", "tooltip": "Veo model. 3.x has audio, 2.x is silent."}),
+        "aspect_ratio": (FLOW_VIDEO_RATIO_IDS, {"default": "16:9 (Landscape)", "tooltip": "Aspect ratio."}),
+        "seed": ("INT", {"default": 42, "min": 0, "max": 999999, "tooltip": "Random seed (0 = random)."}),
+        "upscale": ("BOOLEAN", {"default": False, "tooltip": "Upscale to 1080p (slower download)."}),
+    },
+)
 
-    DISPLAY_NAME = "xAI Grok"
-    CATEGORY = "Specter/text/xAI"
+FlowImageEditNode = _image_node_with_input(
+    "Google Flow Image Edit", "Specter/image/Google", flow_edit_image,
+    {"image": _IMAGE_IN, "prompt": _prompt("Edit instructions.")},
+    {
+        "model": (FLOW_EDIT_MODEL_IDS, {"default": "nano-banana-pro", "tooltip": "Model: imagen-4, nano-banana, nano-banana-pro."}),
+        "aspect_ratio": (FLOW_EDIT_RATIO_IDS, {"default": "16:9 (Landscape)", "tooltip": "Aspect ratio for crop."}),
+        "num_outputs": _int(1, 1, 4, "Number of images (1-4)."),
+        "seed": ("INT", {"default": 42, "min": 0, "max": 999999, "tooltip": "Random seed (0 = random)."}),
+        "upscale": ("BOOLEAN", {"default": False, "tooltip": "Upscale to 2K resolution."}),
+    },
+    multi=True,
+)
+
+
+class FlowI2VNode:
+    """Image-to-video with first/last frame support via Google Flow."""
+    DISPLAY_NAME = "Google Flow Image to Video"
+    CATEGORY = "Specter/video/Google"
+    RETURN_TYPES = ("VIDEO", "IMAGE")
+    RETURN_NAMES = ("video", "last_frame")
+    FUNCTION = "run"
 
     @classmethod
     def INPUT_TYPES(cls):
-        models = get_models("grok") or ["grok-3"]
         return {
             "required": {
-                "prompt": ("STRING", {"multiline": True, "default": "", "tooltip": TOOLTIPS["prompt"]}),
-                "model": (models, {"default": models[0], "tooltip": TOOLTIPS["model"]}),
+                "prompt": _prompt("Video description."),
             },
             "optional": {
-                "system_message": ("STRING", {"multiline": True, "default": "", "tooltip": TOOLTIPS["system_message"]}),
-                "image": ("IMAGE", {"tooltip": TOOLTIPS["image"]}),
-                "preview": ("BOOLEAN", {"default": False, "tooltip": "Show browser preview."}),
+                "first_frame": ("IMAGE", {"tooltip": "Starting frame image (optional)."}),
+                "last_frame": ("IMAGE", {"tooltip": "Ending frame image (optional)."}),
+                "model": (FLOW_I2V_MODEL_IDS, {"default": "veo-3.1-fast", "tooltip": "Veo model. 3.x has audio, 2.x is silent."}),
+                "aspect_ratio": (FLOW_I2V_RATIO_IDS, {"default": "16:9 (Landscape)", "tooltip": "Aspect ratio."}),
+                "seed": ("INT", {"default": 42, "min": 0, "max": 999999, "tooltip": "Random seed (0 = random)."}),
+                "upscale": ("BOOLEAN", {"default": False, "tooltip": "Upscale to 1080p (slower download)."}),
+                "preview": _PREVIEW,
             },
         }
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("response",)
-    FUNCTION = "run"
+    async def run(
+        self,
+        prompt: str,
+        first_frame=None,
+        last_frame=None,
+        model: str = "veo-3.1-fast",
+        aspect_ratio: str = "16:9 (Landscape)",
+        seed: int = 42,
+        upscale: bool = False,
+        preview: bool = False,
+    ):
+        from io import BytesIO
 
-    async def run(self, prompt: str, model: str, system_message: str | None = None, image=None, preview: bool = False):
         from comfy.utils import ProgressBar
+        from comfy_api.input_impl import VideoFromFile
 
-        with temp_image(image) as image_path:
+        with temp_image(first_frame) as first_path, temp_image(last_frame) as last_path:
+            if not first_path and not last_path:
+                raise RuntimeError("At least one frame (first or last) is required")
             pbar = ProgressBar(100)
-            text, _ = await chat_with_grok(
-                prompt,
-                model,
-                image_path,
-                system_message=system_message if system_message and system_message.strip() else None,
+            video_bytes = await flow_generate_i2v(
+                prompt=prompt,
+                first_frame_path=first_path,
+                last_frame_path=last_path,
+                model=model,
+                aspect_ratio=aspect_ratio,
+                seed=seed,
+                upscale=upscale,
                 pbar=pbar,
                 preview=preview,
             )
-            return (text,)
-
-
-class GrokImageNode:
-    """Image generation with Grok Imagine."""
-
-    DISPLAY_NAME = "xAI Grok Imagine"
-    CATEGORY = "Specter/image/xAI"
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "prompt": ("STRING", {"multiline": True, "default": "", "tooltip": "Image description."}),
-            },
-            "optional": {
-                "size": (GROK_SIZES, {"default": GROK_SIZES[0], "tooltip": "Image size/aspect ratio."}),
-                "max_images": ("INT", {"default": 1, "min": 1, "max": 6, "tooltip": "Number of images to generate."}),
-                "preview": ("BOOLEAN", {"default": False, "tooltip": "Show browser preview."}),
-            },
-        }
-
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("images",)
-    FUNCTION = "run"
-
-    async def run(
-        self,
-        prompt: str,
-        size: str = "Square (960x960)",
-        max_images: int = 4,
-        preview: bool = False,
-    ):
-        from comfy.utils import ProgressBar
-
-        pbar = ProgressBar(100)
-        images = await imagine_t2i(prompt, size=size, max_images=max_images, pbar=pbar, preview=preview)
-        return (bytes_list_to_tensor(images),)
-
-
-class GrokImageEditNode:
-    """Image editing with Grok Imagine."""
-
-    DISPLAY_NAME = "xAI Grok Imagine Edit"
-    CATEGORY = "Specter/image/xAI"
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "image": ("IMAGE", {"tooltip": "Image to edit."}),
-                "prompt": ("STRING", {"multiline": True, "default": "", "tooltip": "Edit instructions."}),
-            },
-            "optional": {
-                "max_images": ("INT", {"default": 1, "min": 1, "max": 2, "tooltip": "Number of images to generate."}),
-                "preview": ("BOOLEAN", {"default": False, "tooltip": "Show browser preview."}),
-            },
-        }
-
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("images",)
-    FUNCTION = "run"
-
-    async def run(self, image, prompt: str, max_images: int = 1, preview: bool = False):
-        from comfy.utils import ProgressBar
-
-        with temp_image(image) as image_path:
-            if not image_path:
-                return (empty_image_tensor(),)
-            pbar = ProgressBar(100)
-            images = await imagine_edit(
-                prompt, image_path=image_path, max_images=max_images, pbar=pbar, preview=preview
-            )
-            return (bytes_list_to_tensor(images),)
-
-
-class GrokTextToVideoNode:
-    """Text-to-video generation with Grok Imagine."""
-
-    DISPLAY_NAME = "xAI Grok Imagine Video"
-    CATEGORY = "Specter/video/xAI"
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "prompt": ("STRING", {"multiline": True, "default": "", "tooltip": "Video description."}),
-            },
-            "optional": {
-                "size": (GROK_SIZES, {"default": GROK_SIZES[0], "tooltip": "Video size/aspect ratio."}),
-                "mode": (GROK_MODES, {"default": "custom", "tooltip": "Content mode: normal, custom, fun, spicy."}),
-                "preview": ("BOOLEAN", {"default": False, "tooltip": "Show browser preview."}),
-            },
-        }
-
-    RETURN_TYPES = ("VIDEO", "IMAGE")
-    RETURN_NAMES = ("video", "last_frame")
-    FUNCTION = "run"
-
-    async def run(
-        self,
-        prompt: str,
-        size: str = "1:1 Square (960x960)",
-        mode: str = "custom",
-        preview: bool = False,
-    ):
-        from io import BytesIO
-
-        from comfy.utils import ProgressBar
-        from comfy_api.input_impl import VideoFromFile
-
-        pbar = ProgressBar(100)
-        video_bytes = await imagine_t2v(prompt, size=size, mode=mode, pbar=pbar, preview=preview)
-        if not video_bytes:
-            raise RuntimeError("Video generation failed - no video captured")
-        last_frame = extract_last_frame_from_video(video_bytes)
-        return (VideoFromFile(BytesIO(video_bytes)), last_frame)
-
-
-class GrokImageToVideoNode:
-    """Image-to-video generation with Grok Imagine."""
-
-    DISPLAY_NAME = "xAI Grok Imagine Video I2V"
-    CATEGORY = "Specter/video/xAI"
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "image": ("IMAGE", {"tooltip": "Source image for video."}),
-            },
-            "optional": {
-                "prompt": ("STRING", {"multiline": True, "default": "", "tooltip": "Motion/action description."}),
-                "mode": (GROK_MODES, {"default": "custom", "tooltip": "Content mode: normal, custom, fun, spicy."}),
-                "preview": ("BOOLEAN", {"default": False, "tooltip": "Show browser preview."}),
-            },
-        }
-
-    RETURN_TYPES = ("VIDEO", "IMAGE")
-    RETURN_NAMES = ("video", "last_frame")
-    FUNCTION = "run"
-
-    async def run(self, image, prompt: str = "", mode: str = "custom", preview: bool = False):
-        from io import BytesIO
-
-        from comfy.utils import ProgressBar
-        from comfy_api.input_impl import VideoFromFile
-
-        with temp_image(image) as image_path:
-            if not image_path:
-                raise RuntimeError("Image required for image-to-video")
-            pbar = ProgressBar(100)
-            video_bytes = await imagine_i2v(image_path, prompt=prompt, mode=mode, pbar=pbar, preview=preview)
             if not video_bytes:
                 raise RuntimeError("Video generation failed - no video captured")
-            last_frame = extract_last_frame_from_video(video_bytes)
-            return (VideoFromFile(BytesIO(video_bytes)), last_frame)
+            return (VideoFromFile(BytesIO(video_bytes)), extract_last_frame_from_video(video_bytes))
+
+
+class FlowRef2VNode:
+    """Reference-to-video via Google Flow (Ingredients to Video)."""
+    DISPLAY_NAME = "Google Flow Reference to Video"
+    CATEGORY = "Specter/video/Google"
+    RETURN_TYPES = ("VIDEO", "IMAGE")
+    RETURN_NAMES = ("video", "last_frame")
+    FUNCTION = "run"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "prompt": _prompt("Video description."),
+            },
+            "optional": {
+                "image1": ("IMAGE", {"tooltip": "First reference image."}),
+                "image2": ("IMAGE", {"tooltip": "Second reference image."}),
+                "image3": ("IMAGE", {"tooltip": "Third reference image."}),
+                "model": (FLOW_REF2V_MODEL_IDS, {"default": "veo-3.1-fast", "tooltip": "Veo model. 3.x has audio, 2.x is silent."}),
+                "aspect_ratio": (FLOW_REF2V_RATIO_IDS, {"default": "16:9 (Landscape)", "tooltip": "Aspect ratio."}),
+                "seed": ("INT", {"default": 42, "min": 0, "max": 999999, "tooltip": "Random seed (0 = random)."}),
+                "upscale": ("BOOLEAN", {"default": False, "tooltip": "Upscale to 1080p (slower download)."}),
+                "preview": _PREVIEW,
+            },
+        }
+
+    async def run(
+        self,
+        prompt: str,
+        image1=None,
+        image2=None,
+        image3=None,
+        model: str = "veo-3.1-fast",
+        aspect_ratio: str = "16:9 (Landscape)",
+        seed: int = 42,
+        upscale: bool = False,
+        preview: bool = False,
+    ):
+        from io import BytesIO
+
+        from comfy.utils import ProgressBar
+        from comfy_api.input_impl import VideoFromFile
+
+        # Collect provided images
+        images = [img for img in [image1, image2, image3] if img is not None]
+        if not images:
+            raise RuntimeError("At least one reference image is required")
+
+        # Convert each image to temp file
+        image_paths = []
+        temp_contexts = []
+        for img in images:
+            ctx = temp_image(img)
+            path = ctx.__enter__()
+            if path:
+                image_paths.append(path)
+                temp_contexts.append(ctx)
+
+        try:
+            pbar = ProgressBar(100)
+            video_bytes = await flow_generate_ref2v(
+                prompt=prompt,
+                image_paths=image_paths,
+                model=model,
+                aspect_ratio=aspect_ratio,
+                seed=seed,
+                upscale=upscale,
+                pbar=pbar,
+                preview=preview,
+            )
+            if not video_bytes:
+                raise RuntimeError("Video generation failed - no video captured")
+            return (VideoFromFile(BytesIO(video_bytes)), extract_last_frame_from_video(video_bytes))
+        finally:
+            for ctx in temp_contexts:
+                ctx.__exit__(None, None, None)
+
+
+GrokImageNode = _image_node(
+    "xAI Grok Imagine", "Specter/image/xAI", imagine_t2i,
+    {"prompt": _prompt("Image description.")},
+    {"size": (GROK_SIZES, {"default": GROK_SIZES[0], "tooltip": "Image size/aspect ratio."}), "max_images": _int(1, 1, 6, "Number of images.")},
+    multi=True,
+)
+
+GrokImageEditNode = _image_node_with_input(
+    "xAI Grok Imagine Edit", "Specter/image/xAI", imagine_edit,
+    {"image": _IMAGE_IN, "prompt": _prompt("Edit instructions.")},
+    {"max_images": _int(1, 1, 2, "Number of images.")},
+    multi=True,
+)
+
+
+class NanoBananaNode:
+    """Image generation with Gemini 1.5 Flash."""
+    DISPLAY_NAME = "Google Nano Banana"
+    CATEGORY = "Specter/image/Google"
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
+    FUNCTION = "run"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"prompt": _prompt("Image description.")}, "optional": {"image": _IMAGE_IN, "preview": _PREVIEW}}
+
+    async def run(self, prompt: str, image=None, preview: bool = False):
+        from comfy.utils import ProgressBar
+        with temp_image(image) as image_path:
+            pbar = ProgressBar(100)
+            result = await generate_image_with_gemini(prompt, model="gemini-1.5-flash", image_paths=[image_path] if image_path else None, pbar=pbar, preview=preview)
+            return (bytes_to_tensor(result) if result else empty_image_tensor(),)
+
+
+class NanoBananaProNode:
+    """Image generation with Gemini 3.0 models."""
+    DISPLAY_NAME = "Google Nano Banana Pro"
+    CATEGORY = "Specter/image/Google"
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
+    FUNCTION = "run"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {"prompt": _prompt("Image description."), "model": (["gemini-3.0-flash", "gemini-3.0-pro"], {"default": "gemini-3.0-flash"})},
+            "optional": {"image": _IMAGE_IN, "preview": _PREVIEW},
+        }
+
+    async def run(self, prompt: str, model: str = "gemini-3.0-flash", image=None, preview: bool = False):
+        from comfy.utils import ProgressBar
+        with temp_image(image) as image_path:
+            pbar = ProgressBar(100)
+            result = await generate_image_with_gemini(prompt, model=model, image_paths=[image_path] if image_path else None, pbar=pbar, preview=preview)
+            return (bytes_to_tensor(result) if result else empty_image_tensor(),)
+
+
+class ChatGPTImageNode:
+    """Image generation with ChatGPT."""
+    DISPLAY_NAME = "OpenAI GPT Image 1"
+    CATEGORY = "Specter/image/OpenAI"
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
+    FUNCTION = "run"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        image_models = get_image_models("chatgpt") or ["gpt-image-1.5"]
+        sizes = get_image_sizes() or ["Auto"]
+        return {
+            "required": {"prompt": _prompt("Image description.")},
+            "optional": {
+                "model": (image_models, {"default": image_models[0], "tooltip": "Image model."}),
+                "image": _IMAGE_IN,
+                "size": (sizes, {"default": sizes[0], "tooltip": TOOLTIPS["size"]}),
+                "preview": _PREVIEW,
+            },
+        }
+
+    async def run(self, prompt: str, model: str = "gpt-image-1.5", image=None, size: str = "Auto", preview: bool = False):
+        from comfy.utils import ProgressBar
+        config = get_image_model("chatgpt", model)
+        proxy_model = config.get("proxy_model", "gpt-5-2-instant")
+        prefix = config.get("edit_prefix" if image is not None else "prompt_prefix", "")
+        final_prompt = f"{prefix} {prompt}" if prefix else prompt
+
+        resolution = get_size_resolution(size)
+        if resolution:
+            w, h = map(int, resolution.split("x"))
+            orientation = "landscape" if w > h else "portrait" if h > w else "square"
+            final_prompt = f"{final_prompt}\n\n[Generate {orientation} image at {resolution}.]"
+
+        with temp_image(image) as image_path:
+            pbar = ProgressBar(100)
+            _, image_bytes = await chat_with_gpt(final_prompt, proxy_model, image_path, pbar=pbar, preview=preview, _expect_image=True)
+            return (bytes_to_tensor(image_bytes) if image_bytes else empty_image_tensor(),)
+
+
+# =============================================================================
+# VIDEO NODES
+# =============================================================================
+
+GrokTextToVideoNode = _video_node(
+    "xAI Grok Imagine Video", "Specter/video/xAI", imagine_t2v,
+    {"prompt": _prompt("Video description.")},
+    {"size": (GROK_SIZES, {"default": GROK_SIZES[0]}), "mode": (GROK_MODES, {"default": "custom", "tooltip": "Content mode."})},
+)
+
+GrokImageToVideoNode = _video_node(
+    "xAI Grok Imagine Video I2V", "Specter/video/xAI", imagine_i2v,
+    {"image": _IMAGE_IN},
+    {"prompt": _prompt("Motion/action description."), "mode": (GROK_MODES, {"default": "custom"})},
+    needs_image=True,
+)
 
 
 # =============================================================================
 # UTILITY NODES
 # =============================================================================
 
+class LoadFilesNode:
+    """Load files from disk for use with AI chat nodes."""
+    DISPLAY_NAME = "Load Files"
+    CATEGORY = "Specter/utils"
+    RETURN_TYPES = ("SPECTER_FILES",)
+    RETURN_NAMES = ("files",)
+    FUNCTION = "run"
 
-_TEXT_ONLY_SYSTEM_SUFFIX = " Output ONLY text. Do NOT generate images."
-_TEXT_ONLY_PROMPT_SUFFIX = "\n\n[Reply with text only. Do not generate images.]"
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"file_path": ("STRING", {"default": "", "tooltip": "Path to file. Supports comma-separated paths."})}}
 
-
-def _create_prompt_enhancer(provider: str, display_prefix: str, chat_fn, default_model: str):
-    """Factory for prompt enhancer nodes."""
-
-    class _PromptEnhancerNode:
-        DISPLAY_NAME = f"{display_prefix} Prompt Enhancer"
-        CATEGORY = "Specter/tools"
-
-        @classmethod
-        def INPUT_TYPES(cls):
-            models = get_models(provider) or [default_model]
-            presets = ["custom"] + (get_presets_by_category("prompt_enhancement") or ["prompt_enhancer"])
-            return {
-                "required": {
-                    "input_prompt": ("STRING", {"multiline": True, "default": "", "tooltip": TOOLTIPS["input_prompt"]}),
-                },
-                "optional": {
-                    "model": (models, {"default": models[0], "tooltip": TOOLTIPS["model"]}),
-                    "style": (presets, {"default": presets[1], "tooltip": TOOLTIPS["enhancement_style"]}),
-                    "additional_instructions": (
-                        "STRING",
-                        {
-                            "multiline": True,
-                            "default": "",
-                            "tooltip": "Additional instructions, or full prompt if style is 'custom'.",
-                        },
-                    ),
-                    "preview": ("BOOLEAN", {"default": False, "tooltip": TOOLTIPS["preview"]}),
-                },
-            }
-
-        RETURN_TYPES = ("STRING",)
-        RETURN_NAMES = ("enhanced_prompt",)
-        FUNCTION = "run"
-
-        async def run(
-            self,
-            input_prompt: str,
-            model: str | None = None,
-            style: str = "prompt_enhancer",
-            additional_instructions: str | None = None,
-            preview: bool = False,
-        ):
-            from comfy.utils import ProgressBar
-
-            model = model or default_model
-            extra = additional_instructions.strip() if additional_instructions else ""
-            if style == "custom":
-                system = (extra or "Enhance this prompt for image generation.") + _TEXT_ONLY_SYSTEM_SUFFIX
-            else:
-                base = get_preset_prompt(style) or "Enhance this prompt for image generation."
-                system = f"{base} {extra}".strip() + _TEXT_ONLY_SYSTEM_SUFFIX
-            prompt = input_prompt + _TEXT_ONLY_PROMPT_SUFFIX
-
-            pbar = ProgressBar(100)
-            response, _ = await chat_fn(
-                prompt, model, None, system_message=system, pbar=pbar, preview=preview, disable_tools=True
-            )
-            return (response,)
-
-    return _PromptEnhancerNode
-
-
-def _create_image_describer(provider: str, display_prefix: str, chat_fn, default_model: str):
-    """Factory for image describer nodes."""
-
-    class _ImageDescriberNode:
-        DISPLAY_NAME = f"{display_prefix} Image Describer"
-        CATEGORY = "Specter/tools"
-
-        @classmethod
-        def INPUT_TYPES(cls):
-            models = get_models(provider) or [default_model]
-            presets = ["custom"] + (get_presets_by_category("image_description") or ["image_describer"])
-            return {
-                "required": {
-                    "image": ("IMAGE", {"tooltip": "Image to describe."}),
-                },
-                "optional": {
-                    "model": (models, {"default": models[0], "tooltip": TOOLTIPS["model"]}),
-                    "style": (presets, {"default": presets[1], "tooltip": TOOLTIPS["description_style"]}),
-                    "additional_instructions": (
-                        "STRING",
-                        {
-                            "multiline": True,
-                            "default": "",
-                            "tooltip": "Additional instructions, or full prompt if style is 'custom'.",
-                        },
-                    ),
-                    "preview": ("BOOLEAN", {"default": False, "tooltip": TOOLTIPS["preview"]}),
-                },
-            }
-
-        RETURN_TYPES = ("STRING",)
-        RETURN_NAMES = ("description",)
-        FUNCTION = "run"
-
-        async def run(
-            self,
-            image,
-            model: str | None = None,
-            style: str = "image_describer",
-            additional_instructions: str | None = None,
-            preview: bool = False,
-        ):
-            from comfy.utils import ProgressBar
-
-            model = model or default_model
-            extra = additional_instructions.strip() if additional_instructions else ""
-            if style == "custom":
-                system = (extra or "Describe this image in detail.") + _TEXT_ONLY_SYSTEM_SUFFIX
-            else:
-                base = get_preset_prompt(style) or "Describe this image in detail."
-                system = f"{base} {extra}".strip() + _TEXT_ONLY_SYSTEM_SUFFIX
-            prompt = "Describe this image." + _TEXT_ONLY_PROMPT_SUFFIX
-
-            with temp_image(image) as image_path:
-                pbar = ProgressBar(100)
-                response, _ = await chat_fn(
-                    prompt, model, image_path, system_message=system, pbar=pbar, preview=preview
-                )
-                return (response,)
-
-    return _ImageDescriberNode
+    def run(self, file_path: str):
+        import os
+        paths = [p.strip() for p in file_path.split(",") if p.strip() and os.path.exists(p.strip())]
+        return (paths,)
 
 
 class GrokVideoCombineNode:
-    """Combine two Grok videos sequentially for extended generation."""
-
+    """Combine two Grok videos sequentially."""
     DISPLAY_NAME = "xAI Grok Video Combine"
     CATEGORY = "Specter/video/xAI"
+    RETURN_TYPES = ("VIDEO",)
+    RETURN_NAMES = ("combined_video",)
+    FUNCTION = "run"
 
     @classmethod
     def INPUT_TYPES(cls):
         return {
-            "required": {
-                "video1": ("VIDEO", {"tooltip": "First video."}),
-                "video2": ("VIDEO", {"tooltip": "Second video (will follow video1)."}),
-            },
-            "optional": {
-                "audio": ("BOOLEAN", {"default": True, "tooltip": "Include audio from both videos."}),
-            },
+            "required": {"video1": ("VIDEO", {"tooltip": "First video."}), "video2": ("VIDEO", {"tooltip": "Second video."})},
+            "optional": {"audio": ("BOOLEAN", {"default": True, "tooltip": "Include audio."})},
         }
-
-    RETURN_TYPES = ("VIDEO",)
-    RETURN_NAMES = ("combined_video",)
-    FUNCTION = "run"
 
     def run(self, video1, video2, audio: bool = True):
         from io import BytesIO
 
         from comfy_api.input_impl import VideoFromFile
-
-        combined_bytes = combine_videos(video_to_bytes(video1), video_to_bytes(video2), audio=audio)
-        return (VideoFromFile(BytesIO(combined_bytes)),)
+        return (VideoFromFile(BytesIO(combine_videos(video_to_bytes(video1), video_to_bytes(video2), audio=audio))),)
 
 
-# Gemini adapter for factory functions (different signature)
-async def _gemini_chat_adapter(
-    prompt: str,
-    model: str,
-    image_path: str | None = None,
-    system_message: str | None = None,
-    pbar=None,
-    preview: bool = False,
-    disable_tools: bool = False,
-) -> tuple[str, bytes | None]:
-    """Adapter: Gemini signature → factory signature."""
-    result = await chat_with_gemini(
-        prompt=prompt,
-        model=model,
-        image_paths=[image_path] if image_path else None,
-        system_prompt=system_message,
-        pbar=pbar,
-        preview=preview,
-        disable_image_gen=disable_tools,
-    )
+# =============================================================================
+# PROMPT ENHANCER NODES
+# =============================================================================
+
+_TEXT_ONLY_SYSTEM_SUFFIX = " Output ONLY text. Do NOT generate images."
+_TEXT_ONLY_prompt_SUFFIX = "\n\n[Reply with text only. Do not generate images.]"
+
+CHAT_ADAPTERS = {
+    "chatgpt": chat_with_gpt,
+    "grok": chat_with_grok,
+    "gemini": lambda prompt, model, image_path, system_message, pbar, preview, disable_tools=False: (
+        chat_with_gemini(prompt, model, image_paths=[image_path] if image_path else None, system_prompt=system_message, pbar=pbar, preview=preview, disable_image_gen=disable_tools),
+        None,
+    ),
+}
+
+
+async def _gemini_adapter(prompt, model, image_path, system_message, pbar, preview, disable_tools=False):
+    result = await chat_with_gemini(prompt, model, image_paths=[image_path] if image_path else None, system_prompt=system_message, pbar=pbar, preview=preview, disable_image_gen=disable_tools)
     return (result, None)
 
 
-# Generate utility nodes for all providers
-PromptEnhancerNode = _create_prompt_enhancer("chatgpt", "ChatGPT", chat_with_gpt, "gpt-5-2-instant")
-GrokPromptEnhancerNode = _create_prompt_enhancer("grok", "Grok", chat_with_grok, "grok-3")
-GeminiPromptEnhancerNode = _create_prompt_enhancer("gemini", "Gemini", _gemini_chat_adapter, "gemini-3.0-pro")
-ImageDescriberNode = _create_image_describer("chatgpt", "ChatGPT", chat_with_gpt, "gpt-5-2-instant")
-GrokImageDescriberNode = _create_image_describer("grok", "Grok", chat_with_grok, "grok-3")
-GeminiImageDescriberNode = _create_image_describer("gemini", "Gemini", _gemini_chat_adapter, "gemini-1.5-flash")
+CHAT_ADAPTERS["gemini"] = _gemini_adapter
+
+
+class SpecterPromptEnhancerNode:
+    """Universal prompt enhancer."""
+    DISPLAY_NAME = "Specter Prompt Enhancer"
+    CATEGORY = "Specter/tools"
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("enhanced_prompt",)
+    FUNCTION = "run"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        models = get_all_text_models()
+        presets = ["custom"] + (get_presets_by_category("prompt_enhancement") or ["prompt_enhancer"])
+        return {
+            "required": {"input_prompt": _prompt(TOOLTIPS["input_prompt"])},
+            "optional": {
+                "model": (models, {"default": models[0] if models else "", "tooltip": TOOLTIPS["model"]}),
+                "style": (presets, {"default": presets[1], "tooltip": TOOLTIPS["enhancement_style"]}),
+                "additional_instructions": ("STRING", {"multiline": True, "default": "", "tooltip": "Additional instructions."}),
+                "preview": _PREVIEW,
+            },
+        }
+
+    async def run(self, input_prompt: str, model: str, style: str = "prompt_enhancer", additional_instructions: str | None = None, preview: bool = False):
+        from comfy.utils import ProgressBar
+        if not model:
+            raise ValueError("No model selected.")
+        provider_id = get_provider_for_model(model)
+        if not provider_id:
+            raise ValueError(f"Could not find provider for model: {model}")
+        config = load_config()
+        adapter_key = config["providers"].get(provider_id, {}).get("chat_adapter", provider_id)
+        chat_fn = CHAT_ADAPTERS.get(adapter_key)
+        if not chat_fn:
+            raise ValueError(f"No chat adapter for provider: {provider_id}")
+
+        extra = additional_instructions.strip() if additional_instructions else ""
+        system = ((extra or "Enhance this prompt for image generation.") if style == "custom" else f"{get_preset_prompt(style) or 'Enhance this prompt.'} {extra}".strip()) + _TEXT_ONLY_SYSTEM_SUFFIX
+        pbar = ProgressBar(100)
+        response, _ = await chat_fn(input_prompt + _TEXT_ONLY_prompt_SUFFIX, model, None, system_message=system, pbar=pbar, preview=preview, disable_tools=True)
+        return (response,)
+
+
+class SpecterGooglePromptEnhancerNode:
+    """Prompt enhancer optimized for Google's censored image models."""
+    DISPLAY_NAME = "Google Prompt Enhancer"
+    CATEGORY = "Specter/tools"
+    STRATEGIES = ["artistic", "cinematic", "storyboard", "segmented", "auto"]
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("prompt", "negative")
+    FUNCTION = "run"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        text_models = get_all_text_models()
+        return {
+            "required": {
+                "prompt": ("STRING", {"multiline": True, "tooltip": "Prompt to enhance."}),
+                "strategy": (cls.STRATEGIES, {"default": "artistic"}),
+                "model": (text_models, {"default": "grok-3", "tooltip": TOOLTIPS["model"]}),
+            },
+            "optional": {"additional_negatives": ("STRING", {"default": "", "multiline": True}), "preview": _PREVIEW},
+        }
+
+    async def run(self, prompt: str, strategy: str, model: str, additional_negatives: str = "", preview: bool = False):
+        from comfy.utils import ProgressBar
+        preset_map = {"artistic": "prompt_enhancer_google_artistic", "cinematic": "prompt_enhancer_google_cinematic", "storyboard": "prompt_enhancer_google_storyboard", "segmented": "prompt_enhancer_google_segmented", "auto": "prompt_enhancer_google"}
+        system_prompt = get_preset_prompt(preset_map[strategy])
+        provider_id = get_provider_for_model(model)
+        if not provider_id:
+            raise ValueError(f"Could not find provider for model: {model}")
+        config = load_config()
+        adapter_key = config["providers"].get(provider_id, {}).get("chat_adapter", provider_id)
+        chat_fn = CHAT_ADAPTERS.get(adapter_key)
+        if not chat_fn:
+            raise ValueError(f"No chat adapter for provider: {provider_id}")
+
+        pbar = ProgressBar(100)
+        result, _ = await chat_fn(prompt, model, None, system_message=system_prompt, pbar=pbar, preview=preview, disable_tools=True)
+
+        enhanced, negative = result, additional_negatives
+        if "PROMPT:" in result:
+            parts = result.split("PROMPT:", 1)[1]
+            if "NEGATIVE:" in parts:
+                enhanced, neg_part = parts.split("NEGATIVE:", 1)
+                negative = f"{neg_part.strip()}, {additional_negatives}" if additional_negatives else neg_part.strip()
+            enhanced = enhanced.strip()
+        return (enhanced, negative)
+
+
+class SpecterImageDescriberNode:
+    """Universal image describer."""
+    DISPLAY_NAME = "Specter Image Describer"
+    CATEGORY = "Specter/tools"
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("description",)
+    FUNCTION = "run"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        models = get_all_text_models()
+        presets = ["custom"] + (get_presets_by_category("image_description") or ["image_describer"])
+        return {
+            "required": {"image": _IMAGE_IN},
+            "optional": {
+                "model": (models, {"default": models[0] if models else ""}),
+                "style": (presets, {"default": presets[1], "tooltip": TOOLTIPS["description_style"]}),
+                "additional_instructions": ("STRING", {"multiline": True, "default": ""}),
+                "preview": _PREVIEW,
+            },
+        }
+
+    async def run(self, image, model: str, style: str = "image_describer", additional_instructions: str | None = None, preview: bool = False):
+        from comfy.utils import ProgressBar
+        if not model:
+            raise ValueError("No model selected.")
+        provider_id = get_provider_for_model(model)
+        if not provider_id:
+            raise ValueError(f"Could not find provider for model: {model}")
+        config = load_config()
+        adapter_key = config["providers"].get(provider_id, {}).get("chat_adapter", provider_id)
+        chat_fn = CHAT_ADAPTERS.get(adapter_key)
+        if not chat_fn:
+            raise ValueError(f"No chat adapter for provider: {provider_id}")
+
+        extra = additional_instructions.strip() if additional_instructions else ""
+        system = ((extra or "Describe this image in detail.") if style == "custom" else f"{get_preset_prompt(style) or 'Describe this image.'} {extra}".strip()) + _TEXT_ONLY_SYSTEM_SUFFIX
+
+        with temp_image(image) as image_path:
+            pbar = ProgressBar(100)
+            response, _ = await chat_fn("Describe this image." + _TEXT_ONLY_prompt_SUFFIX, model, image_path, system_message=system, pbar=pbar, preview=preview)
+            return (response,)
 
 
 # =============================================================================
 # NODE REGISTRATION
 # =============================================================================
 
-
-def _wrap_with_context(fn, context_name: str):
-    """Wrap a function to set log context for all logs during execution."""
-    if asyncio.iscoroutinefunction(fn):
-
-        @functools.wraps(fn)
-        async def async_wrapper(*args, **kwargs):
-            with log_context(context_name):
-                return await fn(*args, **kwargs)
-
-        return async_wrapper
-    else:
-
-        @functools.wraps(fn)
-        def sync_wrapper(*args, **kwargs):
-            with log_context(context_name):
-                return fn(*args, **kwargs)
-
-        return sync_wrapper
-
-
 def _register_nodes() -> tuple[dict, dict]:
-    """Auto-register all *Node classes with DISPLAY_NAME, CATEGORY, and FUNCTION."""
+    """Auto-register all *Node classes."""
     import sys
-
     module = sys.modules[__name__]
-    class_mappings = {}
-    display_mappings = {}
+    class_mappings, display_mappings = {}, {}
 
     for name in dir(module):
         if not name.endswith("Node"):
@@ -772,10 +816,8 @@ def _register_nodes() -> tuple[dict, dict]:
         if not (hasattr(cls, "DISPLAY_NAME") and hasattr(cls, "CATEGORY") and hasattr(cls, "FUNCTION")):
             continue
 
-        # Wrap run method with log context
         run_method = getattr(cls, cls.FUNCTION)
-        wrapped = _wrap_with_context(run_method, cls.DISPLAY_NAME)
-        setattr(cls, cls.FUNCTION, wrapped)
+        setattr(cls, cls.FUNCTION, _wrap_with_context(run_method, cls.DISPLAY_NAME))
 
         key = f"Specter_{name.removesuffix('Node')}"
         class_mappings[key] = cls

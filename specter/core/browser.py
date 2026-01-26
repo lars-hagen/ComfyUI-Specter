@@ -7,8 +7,10 @@ from contextvars import ContextVar
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
+from typing import cast
 
-from patchright.async_api import ViewportSize, async_playwright
+import httpx
+from patchright.async_api import StorageState, ViewportSize, async_playwright
 from PIL import Image
 
 # Paths
@@ -190,7 +192,7 @@ async def launch_browser(
     context = await browser.new_context(
         viewport=viewport or VIEWPORT,
         user_agent=USER_AGENT,
-        storage_state=session if session else None,
+        storage_state=cast(StorageState, session) if session else None,
     )
     # CRITICAL: Disable Patchright's route injection to prevent cross-domain navigation errors
     context._impl_obj.route_injecting = True
@@ -266,25 +268,62 @@ async def is_logged_in(page, login_selectors: list[str]) -> bool:
 
 async def handle_login(service: str, event_name: str, login_selectors: list[str]) -> dict:
     """Handle login flow - send event and wait for session."""
-    import asyncio
 
     from server import PromptServer
 
-    log(f"Not logged in to {service} - opening authentication popup...", "⚠")
+    log(f"Not logged in to {service} - sending login required event...", "⚠")
     PromptServer.instance.send_sync(event_name, {})
 
-    log("Waiting for login to complete...", "◌")
-    timeout, elapsed = 300, 0
+    # Cancel the current workflow
+    try:
+        host = getattr(PromptServer.instance, "address", "127.0.0.1")
+        port = getattr(PromptServer.instance, "port", 8188)
+        server_address = f"http://{host}:{port}/interrupt"
+        async with httpx.AsyncClient() as client:
+            await client.post(server_address)
+        log("Workflow interrupted.", "✓")
+    except httpx.RequestError as e:
+        log(f"Failed to interrupt workflow: {e}", "✕")
 
-    while elapsed < timeout:
-        await asyncio.sleep(2)
-        elapsed += 2
-        session = load_session(service)
-        if session:
-            log("Login detected!", "●")
-            return session
+    raise Exception(f"Login required for {service}. Go to Settings > Specter to sign in.")
 
-    raise Exception(f"Login timed out after 5 minutes for {service}")
+
+def has_session(service: str) -> bool:
+    """Check if user has a valid session (cookies saved) for a service."""
+    session = load_session(service)
+    return session is not None and len(session.get("cookies", [])) > 0
+
+
+async def ensure_logged_in(service: str, event_name: str) -> None:
+    """Ensure user is logged in. If not, trigger login popup and cancel workflow.
+
+    Args:
+        service: Service name (e.g., 'grok', 'chatgpt')
+        event_name: Event to send to frontend to trigger login popup
+
+    Raises:
+        Exception: If not logged in - cancels the workflow
+    """
+    if has_session(service):
+        return
+
+    log(f"Not logged in to {service} - sending login required event...", "⚠")
+
+    from server import PromptServer
+    PromptServer.instance.send_sync(event_name, {})
+
+    # Cancel the current workflow
+    try:
+        host = getattr(PromptServer.instance, "address", "127.0.0.1")
+        port = getattr(PromptServer.instance, "port", 8188)
+        server_address = f"http://{host}:{port}/interrupt"
+        async with httpx.AsyncClient() as client:
+            await client.post(server_address)
+        log("Workflow interrupted.", "✓")
+    except httpx.RequestError as e:
+        log(f"Failed to interrupt workflow: {e}", "✕")
+
+    raise Exception(f"Login required for {service}. Go to Settings > Specter to sign in.")
 
 
 class ProgressTracker:

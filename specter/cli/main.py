@@ -6,10 +6,12 @@ Usage:
     specter test <service> <type>      - Test generation capabilities
     specter diagnose <service>         - Browser compatibility testing
     specter watch <service>            - Monitor API traffic
+    specter codegen <url> [options]    - Stealth Playwright recorder
 """
 
 import argparse
 import asyncio
+import json
 import sys
 from pathlib import Path
 
@@ -393,6 +395,71 @@ async def cmd_watch(args):
     await close_browser(playwright, context)
 
 
+async def cmd_codegen(args):
+    """Stealth codegen - Playwright inspector with Patchright stealth."""
+    from typing import cast
+
+    from patchright.async_api import StorageState, async_playwright
+
+    from specter.core.browser import (
+        CHROME_ARGS,
+        USER_AGENT,
+        VIEWPORT,
+        log,
+    )
+
+    url = args.url
+    storage_path = args.load_storage
+    save_path = args.save_storage
+
+    log(f"Starting stealth codegen for {url}", "●")
+
+    # Load storage state if provided
+    storage_state = None
+    if storage_path:
+        storage_file = Path(storage_path)
+        if storage_file.exists():
+            content = storage_file.read_text()
+            data = json.loads(content)
+            # Handle Specter's {"cookies": [...]} format vs Playwright's full format
+            if "origins" not in data and "cookies" in data:
+                storage_state = {"cookies": data["cookies"], "origins": []}
+            else:
+                storage_state = data
+            log(f"Loaded storage from {storage_path}", "○")
+        else:
+            log(f"Storage file not found: {storage_path}", "!")
+
+    pw = await async_playwright().start()
+    browser = await pw.chromium.launch(channel="chrome", headless=False, args=CHROME_ARGS)
+    context = await browser.new_context(
+        viewport=VIEWPORT,
+        user_agent=USER_AGENT,
+        storage_state=cast(StorageState, storage_state) if storage_state else None,
+    )
+    # CRITICAL: Enable Patchright stealth
+    context._impl_obj.route_injecting = True
+
+    page = await context.new_page()
+
+    log("Browser ready with stealth enabled", "✓")
+    log("Opening Playwright Inspector - use Record button to capture actions", "○")
+
+    await page.goto(url, timeout=60000)
+    await page.pause()  # Opens Playwright Inspector
+
+    # Save storage if requested
+    if save_path:
+        state = await context.storage_state()
+        Path(save_path).write_text(json.dumps(state, indent=2))
+        log(f"Saved storage to {save_path}", "✓")
+
+    await context.close()
+    await browser.close()
+    await pw.stop()
+    log("Done", "●")
+
+
 async def cmd_step(args):
     """Debug img2img flow - logs all API requests."""
     import asyncio
@@ -531,13 +598,13 @@ def main():
         epilog="""
 Examples:
   specter onboard https://newprovider.com
-  specter onboard https://grok.com -m video --no-login
   specter test grok i2v --image photo.png --prompt "make it dance"
   specter test grok t2i --prompt "a cat in space"
   specter test chatgpt chat --prompt "hello"
   specter diagnose grok
   specter watch grok
-  specter step --image photo.png --prompt "turn into dog"
+  specter codegen https://flow.com --save-storage flow_auth.json
+  specter codegen https://flow.com --load-storage flow_auth.json
 """,
     )
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
@@ -574,6 +641,12 @@ Examples:
     step_parser.add_argument("-i", "--image", metavar="PATH", required=True, help="Input image")
     step_parser.add_argument("-p", "--prompt", default="Edit this image", help="Edit prompt")
 
+    # Codegen command (stealth recorder)
+    codegen_parser = subparsers.add_parser("codegen", help="Stealth Playwright recorder (bypasses bot detection)")
+    codegen_parser.add_argument("url", help="URL to open")
+    codegen_parser.add_argument("--load-storage", metavar="FILE", help="Load auth state from file")
+    codegen_parser.add_argument("--save-storage", metavar="FILE", help="Save auth state to file on exit")
+
     args = parser.parse_args()
 
     if args.command == "onboard":
@@ -586,6 +659,8 @@ Examples:
         asyncio.run(cmd_watch(args))
     elif args.command == "step":
         asyncio.run(cmd_step(args))
+    elif args.command == "codegen":
+        asyncio.run(cmd_codegen(args))
     else:
         parser.print_help()
         sys.exit(1)

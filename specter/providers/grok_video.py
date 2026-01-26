@@ -8,7 +8,15 @@ from io import BytesIO
 
 from PIL import Image
 
-from ..core.browser import ProgressTracker, capture_preview, close_browser, debug_log, launch_browser, log
+from ..core.browser import (
+    ProgressTracker,
+    capture_preview,
+    close_browser,
+    debug_log,
+    ensure_logged_in,
+    launch_browser,
+    log,
+)
 
 AGE_VERIFICATION_INIT_SCRIPT = """localStorage.setItem('age-verif', '{"state":{"stage":"pass"},"version":3}');"""
 
@@ -22,9 +30,6 @@ SIZES = {
     "9:16 Vertical (720x1280)": ([9, 16], "720x1280"),
     "16:9 Widescreen (1280x720)": ([16, 9], "1280x720"),
 }
-
-# Selector that only appears on the landing page (not logged in)
-LANDING_PAGE_SELECTOR = 'text="Introducing the fastest image and video generation experience"'
 
 VIDEO_MODES = {
     "normal": "normal",
@@ -102,19 +107,12 @@ async def _setup_imagine_page(
         document.head.appendChild(style);
     }""")
 
-    # Wait for either editor (logged in) or landing page (not logged in)
+    # Wait for editor to appear
     editor_selector = ".tiptap.ProseMirror"
     try:
-        await page.wait_for_selector(
-            f"{editor_selector}, {LANDING_PAGE_SELECTOR}",
-            timeout=30000,
-        )
+        await page.wait_for_selector(editor_selector, timeout=30000)
     except Exception:
         pass
-
-    # Check if we're on the landing page (not logged in)
-    if await page.locator(LANDING_PAGE_SELECTOR).count() > 0:
-        raise RuntimeError("Login required. Please authenticate via ComfyUI Settings > Specter > Grok.")
 
     # Wait for editor to be fully hydrated
     await page.wait_for_function(
@@ -336,7 +334,7 @@ async def _wait_for_video(captured: list[bytes], page, progress: ProgressTracker
     raise Exception("Timeout waiting for video")
 
 
-async def _wait_for_images(image_state: dict, page, progress: ProgressTracker, timeout: int = 40) -> list[str]:
+async def _wait_for_images(image_state: dict, page, progress: ProgressTracker, timeout: int = 70) -> list[str]:
     """Wait for images via API response (timeout in seconds)."""
     start = time.time()
     last_preview = 0
@@ -373,6 +371,11 @@ async def imagine_edit(
 ) -> list[bytes]:
     """Image-to-image editing. Output size follows input image dimensions."""
     progress = ProgressTracker(pbar, preview)
+    progress.update(5)
+
+    # Check login before launching browser
+    await ensure_logged_in("grok", GROK_LOGIN_EVENT)
+
     progress.update(10)
 
     playwright, context, page, *_ = await launch_browser("grok")
@@ -451,6 +454,11 @@ async def imagine_t2v(
 ) -> bytes | None:
     """Text-to-video generation."""
     progress = ProgressTracker(pbar, preview)
+    progress.update(5)
+
+    # Check login before launching browser
+    await ensure_logged_in("grok", GROK_LOGIN_EVENT)
+
     progress.update(10)
 
     playwright, context, page, *_ = await launch_browser("grok")
@@ -491,6 +499,11 @@ async def imagine_i2v(
 ) -> bytes | None:
     """Image-to-video generation. Output size follows input image."""
     progress = ProgressTracker(pbar, preview)
+    progress.update(5)
+
+    # Check login before launching browser
+    await ensure_logged_in("grok", GROK_LOGIN_EVENT)
+
     progress.update(10)
 
     playwright, context, page, *_ = await launch_browser("grok")

@@ -64,6 +64,18 @@ SERVICE_CONFIGS = {
         "init_scripts": [DARK_THEME_SCRIPT],
         "cookies": [],
     },
+    "flow": {
+        "service": "flow",
+        "login_url": "https://labs.google/fx/tools/flow",
+        "login_selectors": ['button:has-text("Create with Flow")', 'input[type="email"]'],
+        "success_url_contains": "labs.google/fx",
+        "success_url_excludes": "accounts.google.com",
+        "logged_in_selector": 'button:has-text("New project")',  # Must see this to confirm login
+        "workspace_selector": None,
+        "settings_url": "https://labs.google/fx/tools/flow",
+        "init_scripts": [DARK_THEME_SCRIPT],
+        "cookies": [],
+    },
 }
 
 
@@ -82,7 +94,7 @@ async def check_google_connectivity() -> bool:
     import asyncio
     try:
         # Try to resolve and connect to www.gstatic.com from the server
-        reader, writer = await asyncio.wait_for(
+        _reader, writer = await asyncio.wait_for(
             asyncio.open_connection("www.gstatic.com", 443),
             timeout=3.0
         )

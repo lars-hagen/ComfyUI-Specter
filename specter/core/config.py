@@ -53,6 +53,23 @@ def get_models(provider: str) -> list[str]:
     return [m["id"] for m in models]
 
 
+def get_all_text_models() -> list[str]:
+    """Get all text model IDs across all providers."""
+    all_models = []
+    for provider in load_config().get("providers", {}).values():
+        all_models.extend([m["id"] for m in provider.get("models", [])])
+    return sorted(list(set(all_models)))  # Dedup and sort
+
+
+def get_provider_for_model(model_id: str) -> str | None:
+    """Find which provider owns a given model ID."""
+    for provider_id, provider in load_config().get("providers", {}).items():
+        for model in provider.get("models", []):
+            if model["id"] == model_id:
+                return provider_id
+    return None
+
+
 def get_image_models(provider: str) -> list[str]:
     """Get image model IDs for a provider."""
     models = get_provider(provider).get("image_models", [])

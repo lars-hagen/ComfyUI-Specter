@@ -2,6 +2,8 @@
   "providers": {
     "chatgpt": {
       "name": "ChatGPT",
+      "display_name": "ChatGPT",
+      "chat_adapter": "chatgpt",
       "url": "https://chatgpt.com",
       "models": [
         {"id": "gpt-5-2-instant", "name": "GPT-5.2 Instant", "default": true},
@@ -30,6 +32,8 @@
     },
     "grok": {
       "name": "Grok",
+      "display_name": "Grok",
+      "chat_adapter": "grok",
       "url": "https://grok.com",
       "models": [
         {"id": "grok-3", "name": "Grok 3", "default": true},
@@ -48,12 +52,29 @@
     },
     "gemini": {
       "name": "Gemini",
+      "display_name": "Gemini",
+      "chat_adapter": "gemini",
       "url": "https://gemini.google.com",
       "models": [
         {"id": "gemini-1.5-flash", "name": "gemini-1.5-flash", "default": true},
         {"id": "gemini-3.0-flash", "name": "gemini-3.0-flash"},
         {"id": "gemini-3.0-pro", "name": "gemini-3.0-pro"}
       ]
+    },
+    "flow": {
+      "name": "Flow",
+      "display_name": "Google Flow",
+      "url": "https://labs.google/fx/tools/flow",
+      "image_models": [
+        {"id": "nano-banana-pro", "name": "Nano Banana Pro", "default": true},
+        {"id": "nano-banana", "name": "Nano Banana"},
+        {"id": "imagen", "name": "Imagen"}
+      ],
+      "aspect_ratios": [
+        {"id": "landscape", "name": "Landscape (16:9)", "default": true},
+        {"id": "portrait", "name": "Portrait (9:16)"}
+      ],
+      "max_outputs": 4
     }
   },
   "image_sizes": [
