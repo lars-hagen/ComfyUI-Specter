@@ -106,8 +106,11 @@ class BrowserStream:
             raise
 
     async def stop(self):
-        """Stop browser stream - clean async shutdown."""
+        """Stop browser stream - clean async shutdown, saving session first."""
         sid = self.session_id[:8] if self.session_id else "unknown"
+
+        # Save session before closing (user might have dismissed popups, etc.)
+        await self._save_session()
 
         # Cancel stream task
         if self._stream_task:
@@ -141,16 +144,21 @@ class BrowserStream:
             log(f"[{sid}] Browser stopped", "✓")
         self.session_id = None
 
-    async def _save_login_and_broadcast(self):
+    async def _save_session(self):
+        """Save current session state (cookies + localStorage)."""
         if not self.current_service or not self.page:
             return
         try:
             storage = await self.page.context.storage_state()
             save_session(self.current_service, dict(storage))
             log(f"Session saved for {self.current_service.title()} ({len(storage.get('cookies', []))} cookies)", "✓")
-            await self._broadcast_json({"type": "logged_in"})
         except Exception as e:
             log(f"Failed to save session: {e}", "⚠")
+
+    async def _save_login_and_broadcast(self):
+        """Save session and broadcast logged_in event to close the popup."""
+        await self._save_session()
+        await self._broadcast_json({"type": "logged_in"})
 
     async def _auto_close(self):
         """Auto-close browser after login detection."""
