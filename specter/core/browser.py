@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import cast
 
 import httpx
-from patchright.async_api import StorageState, ViewportSize, async_playwright
+from patchright.async_api import ProxySettings, StorageState, ViewportSize, async_playwright
 from PIL import Image
 
 # Paths
@@ -166,6 +166,16 @@ def is_headed() -> bool:
     return load_settings().get("headed_browser", False)
 
 
+def get_proxy() -> ProxySettings | None:
+    """Get proxy config from settings. Returns Playwright proxy dict or None."""
+    settings = load_settings()
+    if not settings.get("proxy_enabled", False):
+        return None
+    server = settings.get("proxy_server", "127.0.0.1")
+    port = settings.get("proxy_port", 8080)
+    return ProxySettings(server=f"http://{server}:{port}")
+
+
 async def launch_browser(
     service: str,
     headed: bool | None = None,
@@ -178,7 +188,8 @@ async def launch_browser(
     if enable_tracing is None:
         enable_tracing = is_trace_enabled()
 
-    log(f"Launching browser for {service} ({'headed' if headed else 'headless'})...", "◈")
+    proxy = get_proxy()
+    log(f"Launching browser for {service} ({'headed' if headed else 'headless'}{', proxy: ' + proxy['server'] if proxy else ''})...", "◈")
 
     session = load_session(service)
     cookies = session.get("cookies", []) if session else []
@@ -186,7 +197,7 @@ async def launch_browser(
         log(f"Loaded {len(cookies)} cookies", "○")
 
     pw = await async_playwright().start()
-    browser = await pw.chromium.launch(channel="chrome", headless=not headed, args=CHROME_ARGS)
+    browser = await pw.chromium.launch(channel="chrome", headless=not headed, args=CHROME_ARGS, proxy=proxy)
 
     # Use storage_state to restore cookies + localStorage (CF tokens)
     context = await browser.new_context(
@@ -241,8 +252,9 @@ async def close_browser(pw, context, browser=None):
 
 async def create_browser(headed: bool = True, viewport: ViewportSize | None = None):
     """Create browser for CLI tools. Returns: (playwright, browser, context, page)"""
+    proxy = get_proxy()
     pw = await async_playwright().start()
-    browser = await pw.chromium.launch(channel="chrome", headless=not headed, args=CHROME_ARGS)
+    browser = await pw.chromium.launch(channel="chrome", headless=not headed, args=CHROME_ARGS, proxy=proxy)
     context = await browser.new_context(
         viewport=viewport or VIEWPORT,
         user_agent=USER_AGENT,
