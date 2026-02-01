@@ -1,0 +1,260 @@
+android
+samurai
+witch
+astronaut
+librarian owl
+clockwork dragon
+ghost child
+neon monk
+forest spirit
+stone golem
+quantum physicist
+street musician
+night watchman
+dream weaver
+bone collector
+storm chaser
+memory merchant
+time traveler
+shadow puppet
+mirror guardian
+deep sea diver
+mushroom farmer
+cloud shepherd
+crystal hunter
+void walker
+plague doctor
+star cartographer
+silk weaver
+ink master
+rust prophet
+coral gardener
+lightning tamer
+dust collector
+echo hunter
+flame keeper
+ice sculptor
+sand painter
+wind caller
+moss cultivator
+amber preserver
+silver smith
+gold seeker
+copper trader
+iron maiden
+steel warrior
+bronze sentinel
+titanium guardian
+mercury dancer
+platinum angel
+diamond thief
+ruby enchanter
+sapphire mage
+emerald druid
+obsidian knight
+jade empress
+opal oracle
+pearl diver
+amethyst mystic
+topaz alchemist
+garnet assassin
+turquoise shaman
+lapis scholar
+onyx necromancer
+moonstone priestess
+sunstone warrior
+bloodstone vampire
+serpent charmer
+wolf whisperer
+raven keeper
+spider queen
+moth collector
+beetle knight
+butterfly hunter
+dragonfly pilot
+firefly lantern
+cicada singer
+mantis assassin
+scorpion dancer
+centipede sage
+millipede monk
+earthworm farmer
+snail messenger
+slug alchemist
+octopus inventor
+squid pilot
+jellyfish guardian
+starfish healer
+sea urchin mage
+coral architect
+kelp harvester
+plankton collector
+anemone keeper
+barnacle sailor
+crab merchant
+lobster chef
+shrimp dancer
+oyster diver
+mussel farmer
+clam digger
+scallop hunter
+nautilus navigator
+whale singer
+dolphin messenger
+shark hunter
+ray glider
+eel electrician
+puffer architect
+anglerfish lantern
+swordfish knight
+seahorse courier
+mermaid scout
+selkie dancer
+kraken priest
+leviathan tamer
+hydra keeper
+chimera breeder
+griffin rider
+phoenix tender
+basilisk hunter
+manticore tamer
+sphinx riddler
+minotaur guard
+centaur archer
+satyr musician
+faun dancer
+nymph guardian
+dryad keeper
+naiad swimmer
+nereid singer
+oread climber
+space marine
+bounty hunter
+rebel pilot
+alien diplomat
+robot servant
+cyborg detective
+starship captain
+colony engineer
+xenobiologist
+asteroid miner
+smuggler
+terraformer
+AI consciousness
+clone soldier
+mech pilot
+hive queen
+void priest
+galactic emperor
+scavenger
+wasteland warrior
+caravan trader
+bunker dweller
+mutant survivor
+resistance fighter
+vault keeper
+wandering ronin
+armored knight
+battle mage
+necromancer lord
+elven archer
+dwarven smith
+halfling thief
+orc warlord
+goblin tinkerer
+troll shaman
+undead king
+vampire countess
+werewolf alpha
+lich sorcerer
+demon prince
+angel warrior
+elemental spirit
+golem guardian
+treant elder
+giant king
+dragon rider
+gryphon knight
+pegasus rider
+unicorn maiden
+dire wolf rider
+mammoth rider
+saber rider
+raptor trainer
+kraken caller
+leviathan hunter
+behemoth slayer
+young woman
+old man
+curious child
+masked stranger
+hooded figure
+lone traveler
+street vendor
+fortune teller
+alley cat
+stray dog
+urban fox
+city pigeon
+rooftop crow
+sewer rat
+subway musician
+homeless poet
+graffiti artist
+parkour runner
+night shift worker
+taxi driver
+food cart owner
+window washer
+construction worker
+office drone
+barista
+librarian
+museum guard
+zookeeper
+lighthouse keeper
+forest ranger
+mountain guide
+deep sea fisherman
+storm chaser
+volcano researcher
+arctic explorer
+desert nomad
+jungle survivor
+cave spelunker
+river guide
+safari tracker
+wildlife photographer
+marine biologist
+ornithologist
+entomologist
+botanist
+archaeologist
+paleontologist
+anthropologist
+geologist
+astronomer
+physicist
+chemist
+mathematician
+philosopher
+historian
+linguist
+poet laureate
+master painter
+sculptor
+composer
+ballet dancer
+opera singer
+jazz musician
+street performer
+circus acrobat
+sword swallower
+fire breather
+contortionist
+escape artist
+stage magician
+hypnotist
+puppeteer
+ventriloquist
+mime artist

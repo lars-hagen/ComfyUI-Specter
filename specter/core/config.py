@@ -6,9 +6,13 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).parent.parent.parent
 MODELS_PATH = REPO_ROOT / "data" / "models.json"
 SYSTEM_PROMPTS_PATH = REPO_ROOT / "data" / "system_prompts.json"
+AESTHETICS_PATH = REPO_ROOT / "data" / "aesthetics.json"
+ENHANCEMENT_PRESETS_PATH = REPO_ROOT / "data" / "enhancement_presets.json"
 
 _config: dict = {}
 _prompts: dict = {}
+_aesthetics: dict = {}
+_enhancement_presets: dict = {}
 
 
 def load_config() -> dict:
@@ -154,6 +158,73 @@ TOOLTIPS = {
 
 def reload():
     """Force reload all configs."""
-    global _config, _prompts
+    global _config, _prompts, _aesthetics, _enhancement_presets
     _config = {}
     _prompts = {}
+    _aesthetics = {}
+    _enhancement_presets = {}
+
+
+# =============================================================================
+# AESTHETICS
+# =============================================================================
+
+
+def load_aesthetics() -> dict:
+    """Load aesthetics configuration."""
+    global _aesthetics
+    if _aesthetics:
+        return _aesthetics
+    try:
+        with open(AESTHETICS_PATH) as f:
+            _aesthetics = json.load(f)
+    except FileNotFoundError:
+        _aesthetics = {"aesthetics": {}}
+    return _aesthetics
+
+
+def get_aesthetic_names() -> list[str]:
+    """Get list of aesthetic names for dropdown."""
+    return list(load_aesthetics().get("aesthetics", {}).keys())
+
+
+def get_aesthetic(name: str) -> dict:
+    """Get aesthetic data by name."""
+    return load_aesthetics().get("aesthetics", {}).get(name, {})
+
+
+def get_aesthetic_style_prompt(name: str) -> str:
+    """Get the style_prompt for an aesthetic."""
+    return get_aesthetic(name).get("style_prompt", "")
+
+
+# =============================================================================
+# ENHANCEMENT PRESETS
+# =============================================================================
+
+
+def load_enhancement_presets() -> dict:
+    """Load enhancement presets configuration."""
+    global _enhancement_presets
+    if _enhancement_presets:
+        return _enhancement_presets
+    try:
+        with open(ENHANCEMENT_PRESETS_PATH) as f:
+            _enhancement_presets = json.load(f)
+    except FileNotFoundError:
+        _enhancement_presets = {"modes": {}}
+    return _enhancement_presets
+
+
+def get_enhancement_mode_names() -> list[str]:
+    """Get list of enhancement mode names for dropdown."""
+    return list(load_enhancement_presets().get("modes", {}).keys())
+
+
+def get_enhancement_mode_prompt(name: str) -> str:
+    """Get the system prompt for an enhancement mode."""
+    data = load_enhancement_presets()
+    mode = data.get("modes", {}).get(name, {})
+    prompt = mode.get("prompt", "Enhance this prompt for image generation.")
+    suffix = data.get("base_suffix", "")
+    return f"{prompt} {suffix}".strip()

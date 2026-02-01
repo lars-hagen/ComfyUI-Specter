@@ -70,13 +70,12 @@ async def _check_errors(page):
             raise RuntimeError(f"Content moderated by Grok: {result['message']}")
 
 
-async def _setup_imagine_page(
-    page, size: str, video: bool, mode: str | None = None
-) -> tuple:
+async def _setup_imagine_page(page, size: str, video: bool, mode: str | None = None, resolution: str = "480p") -> tuple:
     """Set up page for Grok Imagine.
 
     Args:
         page: Playwright page instance
+        resolution: Video resolution (480p or 720p)
 
     Returns:
         (unblock_fn, gate_state) - call unblock() right before submitting.
@@ -85,10 +84,25 @@ async def _setup_imagine_page(
         RuntimeError: If login is required (caller should handle re-authentication)
     """
     ar, _ = SIZES.get(size, ([1, 1], "960x960"))
-    store = {"state": {"imagineMode": "video" if video else "image", "aspectRatio": ar}}
+
+    # Build the full store matching Grok's exact format:
+    # {"state":{"imagineMode":"video","aspectRatio":[2,3],"videoLength":6,"resolution":"480p","imagineModePostPage":"video"},"version":5}
+    store = {
+        "state": {
+            "imagineMode": "video" if video else "image",
+            "aspectRatio": ar,
+            "videoLength": 6,
+            "resolution": resolution,
+            "imagineModePostPage": "video" if video else "image",
+        },
+        "version": 5,
+    }
 
     ls_mode = "spicy" if mode == "spicy" else "fun"
     video_mode_script = f"localStorage.setItem('grok-video-mode', '\"{ls_mode}\"');" if video else ""
+
+    if video and resolution != "480p":
+        log(f"Injecting resolution={resolution} into localStorage", "◐")
 
     init_script = f"""
         localStorage.setItem('useImagineModeStore', {json.dumps(json.dumps(store))});
@@ -97,7 +111,9 @@ async def _setup_imagine_page(
     """
 
     await page.add_init_script(init_script)
-    gate_result = await _setup_request_gate(page, mode=mode if video else None, allow_video=video)
+    gate_result = await _setup_request_gate(
+        page, mode=mode if video else None, allow_video=video, resolution=resolution
+    )
     await page.goto("https://grok.com/imagine", timeout=60000, wait_until="domcontentloaded")
 
     # Hide text selection highlight (prevents visual artifacts in screenshots)
@@ -126,12 +142,13 @@ async def _setup_imagine_page(
     return gate_result
 
 
-async def _setup_request_gate(page, mode: str | None = None, allow_video: bool = True):
+async def _setup_request_gate(page, mode: str | None = None, allow_video: bool = True, resolution: str = "480p"):
     """Block all generation requests until unblock() is called.
 
     Args:
         mode: Video mode to inject (normal/custom/fun/spicy)
         allow_video: If False, always block videoGen requests (for image edit)
+        resolution: Video resolution (480p or 720p)
 
     Returns (unblock_fn, state) - call unblock() right before submitting.
     """
@@ -177,6 +194,21 @@ async def _setup_request_gate(page, mode: str | None = None, allow_video: bool =
                 original_msg = body.get("message", "")
                 msg = re.sub(r"\s*--mode=\S+", "", original_msg)
                 body["message"] = f"{msg.rstrip()}  --mode={api_mode}"
+
+            # Inject resolution into responseMetadata if this is a video request
+            if is_video_request and resolution != "480p":
+                if "responseMetadata" not in body:
+                    body["responseMetadata"] = {}
+                if "modelConfigOverride" not in body["responseMetadata"]:
+                    body["responseMetadata"]["modelConfigOverride"] = {}
+                if "modelMap" not in body["responseMetadata"]["modelConfigOverride"]:
+                    body["responseMetadata"]["modelConfigOverride"]["modelMap"] = {}
+                if "videoGenModelConfig" not in body["responseMetadata"]["modelConfigOverride"]["modelMap"]:
+                    body["responseMetadata"]["modelConfigOverride"]["modelMap"]["videoGenModelConfig"] = {}
+
+                config = body["responseMetadata"]["modelConfigOverride"]["modelMap"]["videoGenModelConfig"]
+                config["resolutionName"] = resolution
+                log(f"Injected resolution={resolution}", "◐")
 
             debug_log(f"Allowed request: {json.dumps(body, indent=2)}")
             log("Allowed request", "✓")
@@ -449,6 +481,7 @@ async def imagine_t2v(
     prompt: str,
     size: str = "1:1 Square (960x960)",
     mode: str = "custom",
+    resolution: str = "480p",
     pbar=None,
     preview: bool = False,
 ) -> bytes | None:
@@ -464,11 +497,11 @@ async def imagine_t2v(
     playwright, context, page, *_ = await launch_browser("grok")
 
     try:
-        unblock, gate_state = await _setup_imagine_page(page, size, video=True, mode=mode)
+        unblock, gate_state = await _setup_imagine_page(page, size, video=True, mode=mode, resolution=resolution)
         captured, _, _, _ = _setup_response_tracking(page, mode="video")
 
         _, expected_res = SIZES.get(size, ([1, 1], "960x960"))
-        log(f"Settings: {expected_res}, mode={mode}", "○")
+        log(f"Settings: {expected_res}, mode={mode}, res={resolution}", "○")
         log(f"Prompt: {prompt[:60]}..." if len(prompt) > 60 else f"Prompt: {prompt}", "✎")
         progress.update(30)
 
@@ -494,6 +527,7 @@ async def imagine_i2v(
     image_path: str,
     prompt: str = "",
     mode: str = "custom",
+    resolution: str = "480p",
     pbar=None,
     preview: bool = False,
 ) -> bytes | None:
@@ -510,11 +544,11 @@ async def imagine_i2v(
 
     try:
         unblock, gate_state = await _setup_imagine_page(
-            page, "1:1 Square (960x960)", video=True, mode=mode
+            page, "1:1 Square (960x960)", video=True, mode=mode, resolution=resolution
         )
         captured, _, _, upload_state = _setup_response_tracking(page, mode="both")
 
-        log(f"Settings: mode={mode} (size follows input image)", "○")
+        log(f"Settings: mode={mode}, res={resolution} (size follows input image)", "○")
         log(f"Uploading: {image_path}", "↑")
         progress.update(20)
 

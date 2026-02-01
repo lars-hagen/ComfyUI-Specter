@@ -1,0 +1,180 @@
+android
+samurai
+witch
+astronaut
+librarian
+quantum physicist
+street musician
+night watchman
+dream weaver
+time traveler
+deep sea diver
+mushroom farmer
+plague doctor
+star cartographer
+silk weaver
+ink master
+space marine
+bounty hunter
+rebel pilot
+alien diplomat
+cyborg detective
+starship captain
+colony engineer
+xenobiologist
+asteroid miner
+smuggler
+terraformer
+clone soldier
+mech pilot
+scavenger
+wasteland warrior
+caravan trader
+bunker dweller
+mutant survivor
+resistance fighter
+vault keeper
+wandering ronin
+armored knight
+battle mage
+necromancer lord
+elven archer
+dwarven smith
+halfling thief
+orc warlord
+goblin tinkerer
+vampire countess
+werewolf alpha
+demon prince
+angel warrior
+dragon rider
+gryphon knight
+young woman
+old man
+curious child
+masked stranger
+hooded figure
+lone traveler
+street vendor
+fortune teller
+subway musician
+homeless poet
+graffiti artist
+parkour runner
+night shift worker
+taxi driver
+food cart owner
+window washer
+construction worker
+office worker
+barista
+librarian
+museum guard
+zookeeper
+lighthouse keeper
+forest ranger
+mountain guide
+deep sea fisherman
+storm chaser
+volcano researcher
+arctic explorer
+desert nomad
+jungle survivor
+cave spelunker
+river guide
+safari tracker
+wildlife photographer
+marine biologist
+ornithologist
+entomologist
+botanist
+archaeologist
+paleontologist
+anthropologist
+geologist
+astronomer
+physicist
+chemist
+mathematician
+philosopher
+historian
+linguist
+poet
+master painter
+sculptor
+composer
+ballet dancer
+opera singer
+jazz musician
+street performer
+circus acrobat
+sword swallower
+fire breather
+contortionist
+escape artist
+stage magician
+hypnotist
+puppeteer
+ventriloquist
+mime artist
+princess
+queen
+empress
+goddess
+priestess
+sorceress
+enchantress
+healer
+warrior woman
+huntress
+assassin
+spy
+thief
+pirate captain
+viking shieldmaiden
+gladiator
+monk
+nun
+shaman
+oracle
+seer
+prophet
+mystic
+alchemist
+apothecary
+herbalist
+midwife
+nurse
+doctor
+surgeon
+scholar
+scribe
+merchant
+blacksmith
+carpenter
+potter
+weaver
+tailor
+cobbler
+baker
+butcher
+farmer
+shepherd
+fisherman
+sailor
+soldier
+guard
+executioner
+prisoner
+slave
+servant
+noble
+aristocrat
+diplomat
+ambassador
+spy
+courtesan
+geisha
+concubine
+harem dancer
+temple dancer

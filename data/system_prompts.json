@@ -91,12 +91,17 @@
     "analyst": {
       "name": "Analyst",
       "prompt": "You are a data analyst. Provide clear, structured analysis with insights and actionable recommendations."
+    },
+    "idea_generator": {
+      "name": "Idea Generator",
+      "prompt": "Generate ONE creative image idea in exactly 5-8 words. Output ONLY the idea - no explanation, no quotes, no punctuation at the end. Be surprising, specific, and visually evocative. Examples: melancholic android watching cherry blossoms fall, neon samurai meditating in rain"
     }
   },
   "categories": {
     "image_description": ["image_describer", "image_describer_tags", "image_describer_simple", "image_describer_detailed", "image_describer_cinematic"],
     "prompt_enhancement": ["prompt_enhancer", "prompt_enhancer_cinematic", "prompt_enhancer_artistic", "prompt_enhancer_creative_director", "prompt_enhancer_dark_comedy", "prompt_enhancer_noir", "prompt_enhancer_spicy", "prompt_enhancer_nsfw", "prompt_enhancer_google", "prompt_enhancer_google_artistic", "prompt_enhancer_google_cinematic", "prompt_enhancer_google_spicy", "prompt_enhancer_google_unhinged"],
-    "general": ["default", "code_assistant", "creative_writer", "analyst"]
+    "general": ["default", "code_assistant", "creative_writer", "analyst"],
+    "idea_generation": ["idea_generator"]
   },
   "node_defaults": {
     "ChatGPT": "default",

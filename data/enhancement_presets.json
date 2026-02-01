@@ -1,0 +1,26 @@
+{
+  "_comment": "Enhancement presets for the new prompt enhancer. These control HOW MUCH enhancement, not the style direction.",
+  "modes": {
+    "minimal": {
+      "name": "Minimal",
+      "prompt": "Refine this prompt for image generation. Fix any unclear phrasing and ensure it reads naturally. Do not add style direction or mood - preserve the existing creative intent exactly. Keep it concise. Output only the refined prompt."
+    },
+    "standard": {
+      "name": "Standard", 
+      "prompt": "Enhance this prompt for image generation. Add technical quality terms (lighting quality, detail level, composition) without changing the style or mood direction. Preserve the existing aesthetic intent. Output only the enhanced prompt."
+    },
+    "detailed": {
+      "name": "Detailed",
+      "prompt": "Comprehensively enhance this prompt for image generation. Add rich technical details: specific lighting setup, composition technique, texture quality, and rendering parameters. Do not alter the style direction or add new aesthetic elements - amplify what's already there. Output only the enhanced prompt."
+    },
+    "cinematic": {
+      "name": "Cinematic",
+      "prompt": "Enhance this prompt with cinematic technical language. Add camera specifications (lens focal length, depth of field, shot type), film lighting terminology, and composition rules. Preserve the existing mood and style - just add professional cinematography language. Output only the enhanced prompt."
+    },
+    "artistic": {
+      "name": "Artistic",
+      "prompt": "Enhance this prompt with fine art technical language. Add details about brushwork, texture technique, color relationships, and compositional principles. Reference relevant artistic techniques without changing the style direction. Output only the enhanced prompt."
+    }
+  },
+  "base_suffix": "Output ONLY the enhanced prompt text. No explanations, no commentary, no lists."
+}

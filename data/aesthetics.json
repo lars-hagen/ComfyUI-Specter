@@ -1,0 +1,193 @@
+{
+  "_comment": "Visual aesthetics for style injection. Each aesthetic defines the 'look' - the prompt enhancer adds technical quality without changing direction.",
+  "aesthetics": {
+    "cyberpunk": {
+      "name": "Cyberpunk",
+      "style_prompt": "cyberpunk aesthetic, neon lights, rain-slicked streets, holographic displays, cyan and magenta glow, dystopian urban, high-tech low-life, nocturnal city"
+    },
+    "dreamcore": {
+      "name": "Dreamcore",
+      "style_prompt": "dreamcore aesthetic, liminal spaces, surreal emptiness, nostalgic haze, uncanny familiarity, soft muted colors, eerie calm, faded dreamlike quality"
+    },
+    "dark_academia": {
+      "name": "Dark Academia",
+      "style_prompt": "dark academia aesthetic, ancient library, candlelight warmth, leather-bound books, gothic architecture, scholarly atmosphere, deep browns and burgundy, intellectual mood"
+    },
+    "cottagecore": {
+      "name": "Cottagecore",
+      "style_prompt": "cottagecore aesthetic, pastoral countryside, wildflowers, cozy rustic interior, soft natural light, handmade warmth, peaceful idyllic mood, gentle earth tones"
+    },
+    "vaporwave": {
+      "name": "Vaporwave",
+      "style_prompt": "vaporwave aesthetic, 80s retro-futurism, neon pink and cyan, chrome and glass, palm tree silhouettes, sunset gradient, nostalgic digital, synthwave mood"
+    },
+    "gothic": {
+      "name": "Gothic",
+      "style_prompt": "gothic aesthetic, dark cathedral architecture, dramatic shadows, Victorian darkness, ornate details, deep purple and black, mysterious romantic mood, candlelit atmosphere"
+    },
+    "y2k": {
+      "name": "Y2K",
+      "style_prompt": "y2k aesthetic, glossy 3D surfaces, water droplets, bubbly translucent shapes, electric blue and lime green, chrome accents, early internet optimism, playful futuristic"
+    },
+    "anime": {
+      "name": "Anime",
+      "style_prompt": "anime style, Japanese animation aesthetic, cel shading, expressive features, dynamic composition, vibrant saturated colors, clean bold lines, manga influenced"
+    },
+    "ghibli": {
+      "name": "Studio Ghibli",
+      "style_prompt": "studio ghibli style, hand-painted quality, lush detailed backgrounds, whimsical magical realism, soft warm lighting, peaceful contemplative mood, nature details, nostalgic beauty"
+    },
+    "solarpunk": {
+      "name": "Solarpunk",
+      "style_prompt": "solarpunk aesthetic, nature integrated with technology, green sustainable future, solar panels as art, lush vegetation on architecture, hopeful optimistic mood, harmonious eco-utopia"
+    },
+    "brutalist": {
+      "name": "Brutalist",
+      "style_prompt": "brutalist aesthetic, raw concrete textures, imposing geometric forms, monolithic structures, stark shadows, industrial minimalism, powerful architectural presence"
+    },
+    "ethereal": {
+      "name": "Ethereal",
+      "style_prompt": "ethereal aesthetic, soft divine light, flowing delicate fabrics, heavenly radiance, dreamy soft focus, pale gold and white, angelic otherworldly beauty, transcendent mood"
+    },
+    "grunge": {
+      "name": "Grunge",
+      "style_prompt": "grunge aesthetic, gritty textures, heavy film grain, urban decay, raw authentic imperfection, muted desaturated colors, analog photography feel, rebellious mood"
+    },
+    "minimalist": {
+      "name": "Minimalist",
+      "style_prompt": "minimalist aesthetic, abundant negative space, clean simple lines, elegant restraint, focused composition, calm sophistication, single subject emphasis, serene clarity"
+    },
+    "maximalist": {
+      "name": "Maximalist",
+      "style_prompt": "maximalist aesthetic, layered rich details, bold patterns and textures, ornate decoration, jewel tones and gold, visual abundance, exuberant overwhelming beauty"
+    },
+    "noir": {
+      "name": "Film Noir",
+      "style_prompt": "film noir aesthetic, dramatic chiaroscuro lighting, hard shadows, venetian blind patterns, rain-slicked reflections, high contrast black and white mood, cynical mysterious atmosphere"
+    },
+    "romantic": {
+      "name": "Romantic",
+      "style_prompt": "romantic aesthetic, golden hour lighting, soft focus warmth, intimate tender mood, warm color palette, dreamy atmosphere, gentle emotional beauty"
+    },
+    "horror": {
+      "name": "Horror",
+      "style_prompt": "horror aesthetic, unsettling shadows, creeping dread atmosphere, decay and distortion, desaturated sickly tones, visceral disturbing elements, ominous tension"
+    },
+    "western_gothic": {
+      "name": "Western Gothic",
+      "style_prompt": "western gothic aesthetic, dark frontier atmosphere, weathered leather and tarnished silver, desert twilight, Victorian meets wild west, haunted plains, cinematic moody"
+    },
+    "corpcore": {
+      "name": "Corpcore",
+      "style_prompt": "corpcore aesthetic, brutalist office architecture, sharp power suits, corporate dystopia, cold clinical precision, charcoal and navy palette, late-capitalism satire mood"
+    },
+    "whimsigothic": {
+      "name": "Whimsigothic",
+      "style_prompt": "whimsigothic aesthetic, celestial moon and star motifs, crushed velvet textures, apothecary botanical elements, emerald and oxblood colors, romantic dark whimsy, enchanted mood"
+    },
+    "biopunk": {
+      "name": "Biopunk",
+      "style_prompt": "biopunk aesthetic, bio-luminescent organic elements, living machine textures, DNA cellular motifs, visceral wet surfaces, alien organic-technological fusion, unsettling beauty"
+    },
+    "hypervenus": {
+      "name": "Hypervenus",
+      "style_prompt": "hypervenus aesthetic, classical goddess imagery, draped silk fabrics, shell and pearl motifs, cream and gold palette, powerful feminine energy, mythological luxury"
+    },
+    "goblincore": {
+      "name": "Goblincore",
+      "style_prompt": "goblincore aesthetic, mushrooms and moss, forest floor treasures, frogs and snails, earthy brown and green tones, ugly-cute charm, chaotic nature whimsy"
+    },
+    "apothecary": {
+      "name": "Apothecary",
+      "style_prompt": "apothecary aesthetic, dried herbs and flowers, vintage glass jars, handwritten labels, candlelit warmth, ochre and burgundy tones, witchy cottage mood, cozy mysterious"
+    },
+    "signalwave": {
+      "name": "Signalwave",
+      "style_prompt": "signalwave aesthetic, VHS static and scan lines, CRT monitor glow, broadcast interference, analog horror atmosphere, eerie transmission decay, nostalgic unsettling"
+    },
+    "cassette_futurism": {
+      "name": "Cassette Futurism",
+      "style_prompt": "cassette futurism aesthetic, chunky 1980s hardware, beige and olive plastic, tactile buttons and switches, retro computer terminals, amber screen glow, utilitarian retro-tech"
+    },
+    "neo_baroque": {
+      "name": "Neo-Baroque",
+      "style_prompt": "neo-baroque aesthetic, ornate gold frames and moldings, layered opulent textures, dramatic theatrical excess, emerald sapphire and crimson jewel tones, classical grandeur"
+    },
+    "cyber_fairy": {
+      "name": "Cyber-Fairy",
+      "style_prompt": "cyber-fairy aesthetic, holographic iridescent materials, futuristic fairy elements, LED neon magic, chrome and rainbow, tech meets fantasy whimsy, digital enchantment"
+    },
+    "laborwave": {
+      "name": "Laborwave",
+      "style_prompt": "laborwave aesthetic, socialist realism style, bold propaganda poster composition, industrial worker themes, monumental heroic poses, red gold and black, revolutionary spirit"
+    },
+    "contemporary": {
+      "name": "Contemporary",
+      "style_prompt": "contemporary aesthetic, natural realistic lighting, clean modern spaces, authentic present-day setting, urban or domestic environment, relatable lifestyle mood"
+    },
+    "historical": {
+      "name": "Historical",
+      "style_prompt": "historical aesthetic, period-accurate costume and setting, era-appropriate atmosphere, cinematic historical drama feel, authentic aged textures, classical composition"
+    },
+    "sci_fi": {
+      "name": "Sci-Fi",
+      "style_prompt": "science fiction aesthetic, futuristic technology, sleek spacecraft and stations, advanced civilization, chrome and glass surfaces, blue and white lighting, cinematic space drama"
+    },
+    "space_opera": {
+      "name": "Space Opera",
+      "style_prompt": "space opera aesthetic, epic galactic scale, majestic starships, alien worlds, dramatic nebula backgrounds, heroic sweeping compositions, grand cosmic adventure"
+    },
+    "hard_sci_fi": {
+      "name": "Hard Sci-Fi",
+      "style_prompt": "hard science fiction aesthetic, realistic space technology, industrial functional design, scientific accuracy, cold vacuum of space, utilitarian spacecraft, grounded futurism"
+    },
+    "retrofuturism": {
+      "name": "Retrofuturism",
+      "style_prompt": "retrofuturism aesthetic, 1950s vision of the future, atomic age optimism, chrome rockets and ray guns, bubble helmets, pastel and silver, Jetsons meets pulp sci-fi"
+    },
+    "steampunk": {
+      "name": "Steampunk",
+      "style_prompt": "steampunk aesthetic, Victorian era machinery, brass gears and copper pipes, steam-powered technology, clockwork mechanisms, goggles and corsets, industrial romantic adventure"
+    },
+    "dieselpunk": {
+      "name": "Dieselpunk",
+      "style_prompt": "dieselpunk aesthetic, 1920s-1940s industrial technology, art deco machinery, diesel-powered vehicles, noir atmosphere, sepia and rust tones, wartime alternate history"
+    },
+    "afrofuturism": {
+      "name": "Afrofuturism",
+      "style_prompt": "afrofuturism aesthetic, African cultural elements merged with technology, vibrant patterns and textiles, advanced African civilization, gold and earth tones, ancestral futurism"
+    },
+    "post_apocalyptic": {
+      "name": "Post-Apocalyptic",
+      "style_prompt": "post-apocalyptic aesthetic, ruined civilization, overgrown decay, scavenged technology, survival atmosphere, muted dusty colors, desolate beauty, nature reclaiming"
+    },
+    "fantasy": {
+      "name": "Fantasy",
+      "style_prompt": "fantasy aesthetic, magical realm, mythical creatures, enchanted forests and castles, medieval-inspired setting, rich jewel tones, epic adventure atmosphere, otherworldly wonder"
+    },
+    "dark_fantasy": {
+      "name": "Dark Fantasy",
+      "style_prompt": "dark fantasy aesthetic, grim magical world, ominous supernatural elements, gothic castles and ruins, blood and shadow, desaturated with crimson accents, brooding epic atmosphere"
+    },
+    "high_fantasy": {
+      "name": "High Fantasy",
+      "style_prompt": "high fantasy aesthetic, grand magical kingdoms, noble heroes and ancient evil, epic landscapes, glowing magic effects, rich saturated colors, Tolkien-esque grandeur"
+    },
+    "underwater": {
+      "name": "Underwater",
+      "style_prompt": "underwater aesthetic, deep ocean depths, bioluminescent creatures, coral and kelp forests, dappled light rays, blue-green color palette, serene aquatic mystery"
+    },
+    "psychedelic": {
+      "name": "Psychedelic",
+      "style_prompt": "psychedelic aesthetic, kaleidoscopic patterns, vibrant impossible colors, fractal geometries, melting distorted forms, consciousness-expanding visuals, 1960s acid art influence"
+    },
+    "art_nouveau": {
+      "name": "Art Nouveau",
+      "style_prompt": "art nouveau aesthetic, flowing organic lines, botanical motifs, elegant feminine forms, decorative borders, muted gold and jewel tones, Mucha-inspired beauty"
+    },
+    "art_deco": {
+      "name": "Art Deco",
+      "style_prompt": "art deco aesthetic, geometric patterns, bold symmetry, gold and black luxury, 1920s glamour, sunburst motifs, elegant sophisticated opulence"
+    }
+  }
+}

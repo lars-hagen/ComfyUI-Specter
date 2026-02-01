@@ -21,6 +21,43 @@ LOGIN_SELECTORS = [
 AGE_VERIFICATION_SCRIPT = """localStorage.setItem('age-verif', '{"state":{"stage":"pass"},"version":3}');"""
 DISMISS_NOTIFICATIONS_SCRIPT = """localStorage.setItem('notifications-toast-dismiss-count', '999');"""
 
+# Error detection (rate limit, moderation) - checks toasts, banners, and page text
+ERROR_CHECK_JS = """() => {
+    // Check toasts
+    const toasts = Array.from(document.querySelectorAll('li.toast'));
+    for (const toast of toasts) {
+        const text = toast.textContent;
+        if (text.includes('Rate limit reached')) {
+            return { error: 'rate_limit', message: text };
+        }
+        if (text.includes('Content Moderated')) {
+            return { error: 'moderated', message: text };
+        }
+    }
+    // Check page text for rate limit banners and other error messages
+    const pageText = document.body.innerText;
+    if (pageText.includes("You've reached your current limit") || pageText.includes('reached your current limit')) {
+        return { error: 'rate_limit', message: "You've reached your current limit. Upgrade to SuperGrok for higher limits, or wait." };
+    }
+    if (pageText.includes('Rate limit reached')) {
+        return { error: 'rate_limit', message: 'Rate limit reached' };
+    }
+    if (pageText.includes('Content Moderated')) {
+        return { error: 'moderated', message: 'Content Moderated. Try a different idea.' };
+    }
+    return null;
+}"""
+
+
+async def _check_errors(page):
+    """Check for errors (rate limit, moderation) and raise if detected."""
+    result = await page.evaluate(ERROR_CHECK_JS)
+    if result:
+        if result["error"] == "rate_limit":
+            raise RuntimeError(f"Grok rate limit reached: {result['message']}")
+        elif result["error"] == "moderated":
+            raise RuntimeError(f"Content moderated by Grok: {result['message']}")
+
 
 async def chat_with_grok(
     prompt: str,
@@ -54,7 +91,9 @@ async def chat_with_grok(
             await page.add_init_script(DISMISS_NOTIFICATIONS_SCRIPT)
             await page.goto("https://grok.com", wait_until="domcontentloaded")
 
-        await page.wait_for_selector('textarea[aria-label="Ask Grok anything"], div[contenteditable="true"]', timeout=30000)
+        await page.wait_for_selector(
+            'textarea[aria-label="Ask Grok anything"], div[contenteditable="true"]', timeout=30000
+        )
         log("Connected to Grok", "●")
         progress.update(20)
 
@@ -125,7 +164,7 @@ async def chat_with_grok(
                     data = await response.body()
                     if len(data) > 80000:  # 80KB min
                         captured_images.append(data)
-                        log(f"Captured image ({len(data)//1024}KB)", "◆")
+                        log(f"Captured image ({len(data) // 1024}KB)", "◆")
                 except:
                     pass
                 return
@@ -229,7 +268,7 @@ async def _handle_login() -> dict:
 async def _wait_for_image(page, captured: list, progress: ProgressTracker, preview: bool) -> tuple[str, bytes | None]:
     """Wait for image generation."""
     try:
-        start, last_preview = asyncio.get_event_loop().time(), 0
+        start, last_preview, last_error_check = asyncio.get_event_loop().time(), 0, 0
 
         while asyncio.get_event_loop().time() - start < 60:
             if captured:
@@ -240,6 +279,12 @@ async def _wait_for_image(page, captured: list, progress: ProgressTracker, previ
                 return "Image generated", captured[-1]
 
             elapsed = asyncio.get_event_loop().time() - start
+
+            # Check for errors (rate limit, moderation) every 3 seconds
+            if elapsed - last_error_check >= 3:
+                await _check_errors(page)
+                last_error_check = elapsed
+
             if elapsed - last_preview >= 3:
                 if preview:
                     progress.update_async(int(40 + elapsed), page)
@@ -250,6 +295,9 @@ async def _wait_for_image(page, captured: list, progress: ProgressTracker, previ
             await asyncio.sleep(0.5)
 
         return "", None
+    except RuntimeError:
+        # Re-raise rate limit and moderation errors
+        raise
     except Exception as e:
         log(f"Image capture failed: {e}", "⚠")
         return "", None
@@ -258,7 +306,7 @@ async def _wait_for_image(page, captured: list, progress: ProgressTracker, previ
 async def _wait_for_text(page, state: dict, progress: ProgressTracker, preview: bool) -> str:
     """Wait for text response."""
     try:
-        start, last_preview = asyncio.get_event_loop().time(), 0
+        start, last_preview, last_error_check = asyncio.get_event_loop().time(), 0, 0
 
         while asyncio.get_event_loop().time() - start < 120:
             if state["complete"]:
@@ -269,6 +317,12 @@ async def _wait_for_text(page, state: dict, progress: ProgressTracker, preview: 
                 return state["text"]
 
             elapsed = asyncio.get_event_loop().time() - start
+
+            # Check for errors (rate limit, moderation) every 3 seconds
+            if elapsed - last_error_check >= 3:
+                await _check_errors(page)
+                last_error_check = elapsed
+
             if elapsed - last_preview >= 3:
                 if preview:
                     progress.update_async(int(40 + elapsed / 2), page)
@@ -288,6 +342,9 @@ async def _wait_for_text(page, state: dict, progress: ProgressTracker, preview: 
             pass
 
         return ""
+    except RuntimeError:
+        # Re-raise rate limit and moderation errors
+        raise
     except Exception as e:
         log(f"Text extraction failed: {e}", "⚠")
         return ""
